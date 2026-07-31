@@ -8,6 +8,7 @@ from typing import Any
 from app.features.ocr.extraction import (
     CONFIDENCE_CORRECTED,
     LINE_ITEM_FIELD_CLASSES,
+    PAN_RE,
     PART1_FIELD_CLASSES,
     PART2_SUMMARY_FIELD_CLASSES,
     FieldClass,
@@ -44,6 +45,27 @@ def _apply_po_request_swap_safety_net(raw: dict[str, Any]) -> dict[str, Any]:
         request_looks_like_request_no = _REQUEST_NO_RE.fullmatch(request_no) is not None
         if request_looks_like_po_no and not request_looks_like_request_no:
             return {**raw, "consignorPoNo": request_no, "requestNo": None}
+
+    return raw
+
+
+# Separate safety net for a different field pair: consignorPan sits right above Request No
+# in the CONSIGNOR column on this template, and the AI has been seen reading Request No's
+# value into consignorPan while leaving requestNo null. Only fires on the specific,
+# unambiguous shape of that mistake - consignorPan doesn't look like a PAN at all (never
+# touches a value that's merely a char-confusion away from a valid PAN) while requestNo is
+# missing and consignorPan's raw value does look like a Request No.
+def _apply_pan_request_swap_safety_net(raw: dict[str, Any]) -> dict[str, Any]:
+    consignor_pan = raw.get("consignorPan")
+    request_no = raw.get("requestNo")
+
+    if (
+        request_no is None
+        and isinstance(consignor_pan, str)
+        and _REQUEST_NO_RE.fullmatch(consignor_pan) is not None
+        and PAN_RE.fullmatch(consignor_pan) is None
+    ):
+        return {**raw, "consignorPan": None, "requestNo": consignor_pan}
 
     return raw
 
@@ -178,6 +200,7 @@ async def run_full_pipeline(
 ) -> dict[str, Any]:
     raw_part1 = await process_part1(part1_bytes, part1_mime)
     raw_part1 = _apply_po_request_swap_safety_net(raw_part1)
+    raw_part1 = _apply_pan_request_swap_safety_net(raw_part1)
     raw_part2 = await process_part2(part2_bytes, part2_mime)
 
     update: dict[str, Any] = _apply_corrections(raw_part1, PART1_FIELD_CLASSES)
