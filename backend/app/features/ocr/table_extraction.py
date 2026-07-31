@@ -10,7 +10,12 @@ from typing import Any
 from app.features.ocr import preprocessing
 from app.features.ocr.ai_extraction import extract_part2_summary
 from app.features.ocr.ppstructure_runner import analyze_page
-from app.features.ocr.table_html_parser import find_item_rows, parse_table_rows
+from app.features.ocr.table_html_parser import (
+    Row,
+    find_item_rows,
+    parse_table_rows,
+    read_row_by_column_map,
+)
 
 # "Page 1 of 2" (or higher) means the item table continues on a page not in this upload.
 _PAGE_OF_RE = re.compile(r"Page\s*(\d+)\s*of\s*(\d+)", re.IGNORECASE)
@@ -47,13 +52,50 @@ def detect_multi_page(page_text: str) -> bool:
     return total_pages > 1
 
 
-def build_line_items(item_rows: list[list[tuple[str, int]]]) -> list[dict[str, str | None]]:
+# Every real item description on this template starts with an uppercase item-code
+# abbreviation (SC, HOB, GSC, SHANK, STEP...) optionally preceded by its SR No. Only
+# treat a leading 1-2 digit number as the SR No if it's immediately followed by that
+# pattern - a naive "first digit found" match would wrongly grab a digit from within the
+# description itself (e.g. the "9" in "SC DRILL 9.0xFL61...").
+_SR_NO_DESCRIPTION_RE = re.compile(r"^\s*(\d{1,2})\s+(?=[A-Z]{2,})")
+
+
+def _split_sr_no_description(merged: str | None) -> tuple[str | None, str | None]:
+    if merged is None:
+        return None, None
+    match = _SR_NO_DESCRIPTION_RE.match(merged)
+    if match:
+        return match.group(1), merged[match.end() :].strip()
+    return None, merged.strip()
+
+
+def build_line_items(
+    item_rows: list[tuple[Row, dict[str, int]]],
+) -> list[dict[str, str | None]]:
     items = []
-    for row in item_rows:
-        sr_no, description, hsn_sac, basic, quantity, amount = (text or None for text, _ in row)
+    for row, column_map in item_rows:
+        # Fields are read by their actual logical column position (see
+        # table_html_parser.build_column_map/read_row_by_column_map) - this table's
+        # detected column ORDER and per-cell colspan both vary between real documents, so
+        # there is no fixed left-to-right position that's safe to assume.
+        fields = read_row_by_column_map(row, column_map)
+        sr_no = fields.get("srNo")
+        description = fields.get("description")
+        hsn_sac = fields.get("hsnSac")
+        basic = fields.get("basic")
+        quantity = fields.get("quantity")
+        amount = fields.get("amount")
+
+        # If this table's header had no separate SR No column at all (the faint divider
+        # between the narrow SR No cell and the wide Description cell wasn't detected, so
+        # they merged into one header cell/text), a leading "<digit(s)> <ITEM-CODE>" in the
+        # description is the SR No hiding inside it - split it back out.
+        if sr_no is None and description is not None:
+            sr_no, description = _split_sr_no_description(description)
+
         # PP-Structure occasionally emits a spurious duplicate/blank row right at the item/
         # summary boundary. Every real item row has a description; a ghost row does not.
-        if description is None:
+        if not description:
             continue
         items.append(
             {

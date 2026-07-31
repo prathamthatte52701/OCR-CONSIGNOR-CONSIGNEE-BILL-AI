@@ -19,11 +19,6 @@ from app.features.ocr.table_extraction import process_part2
 
 LOW_CONFIDENCE_THRESHOLD = 80
 
-# A field must be at least CORRECTED (auto-fixed to a fully valid value) or EXACT to be
-# trusted as an input to the arithmetic safety nets below - PLAUSIBLE/EMPTY are not
-# reliable enough to derive another field's value from.
-CONFIDENCE_CORRECTED_THRESHOLD = CONFIDENCE_CORRECTED
-
 # On every real sample seen so far, PO No always starts "3242..." and Request No is
 # always zero-padded starting "0000...". PO No and Request No sit on adjacent lines in
 # the CONSIGNOR column and the AI occasionally reads one label's value into the other
@@ -91,51 +86,70 @@ def _format_money(value: float) -> str:
     return f"{value:,.2f}"
 
 
-# Safety net for the one specific, common PP-Structure failure mode seen on real samples:
-# Basic and Quantity are read cleanly (both fully correct, per this template's expected
-# format), but the printed Amount cell is misread. Since Amount = Basic x Quantity is a
-# printed-form invariant on this template, this recomputes Amount ONLY when Basic and
-# Quantity both parsed as exact/auto-corrected values (never touches Basic or Quantity
-# themselves - too ambiguous which of the three is actually wrong when more than one looks
-# questionable, so this only acts on the single unambiguous case).
+# _parse_money/FieldClass.MONEY both accept "1,40000" (digits+commas, no decimal
+# required) as a parseable number - that shape is itself evidence of an OCR misread on
+# this template, where every real amount is printed "1,234.00" (exactly two decimals,
+# correct thousands grouping). Used to gate which values are trustworthy enough to be
+# an ANCHOR for deriving another field - never to reject a value from being displayed.
+_WELL_FORMED_MONEY_RE = re.compile(r"^\d{1,3}(,\d{3})*\.\d{2}$")
+
+
+def _is_trustworthy_money(value: Any) -> bool:
+    return isinstance(value, str) and bool(_WELL_FORMED_MONEY_RE.fullmatch(value))
+
+
+def _is_trustworthy_quantity(value: Any) -> bool:
+    return isinstance(value, str) and value.isdigit() and 1 <= int(value) <= 99
+
+
+# Safety net for ONE specific, narrow PP-Structure failure mode: the Amount cell is
+# genuinely missing (never read at all) while Basic and Quantity both came through
+# clean and well-formed. Since Amount = Basic x Quantity is a printed-form invariant on
+# this template, a missing Amount can be safely derived from the two that WERE read.
+#
+# Deliberately does NOT touch a row where Amount already holds a value, however
+# malformed-looking - a present value is evidence something real was printed there, and
+# there is no reliable way to tell whether Basic, Quantity, or Amount is the one that's
+# actually wrong. Overwriting a present Amount from Basic x Quantity was tried and found
+# unsafe: on a real sample where Quantity itself had been misread, it replaced an
+# already-correct (if oddly-formatted) Amount with a wrong one computed from the bad
+# Quantity - amplifying one field's error into another's data instead of fixing it.
 def _apply_row_arithmetic_repair(item: dict[str, Any]) -> dict[str, Any]:
-    if item.get("basicConfidence", 0) < CONFIDENCE_CORRECTED_THRESHOLD:
+    if item.get("amount") is not None:
         return item
-    if item.get("quantityConfidence", 0) < CONFIDENCE_CORRECTED_THRESHOLD:
+    if not _is_trustworthy_money(item.get("basic")):
         return item
-
-    basic = _parse_money(item.get("basic"))
-    quantity = _parse_money(item.get("quantity"))
-    amount = _parse_money(item.get("amount"))
-    if basic is None or quantity is None:
+    if not _is_trustworthy_quantity(item.get("quantity")):
         return item
 
-    expected_amount = round(basic * quantity, 2)
-    if amount is not None and abs(amount - expected_amount) < 0.01:
-        return item  # already consistent - nothing to repair
+    basic = _parse_money(item["basic"])
+    quantity = int(item["quantity"])
+    assert basic is not None  # _is_trustworthy_money already guarantees this parses
 
     return {
         **item,
-        "amount": _format_money(expected_amount),
+        "amount": _format_money(round(basic * quantity, 2)),
         "amountConfidence": CONFIDENCE_CORRECTED,
         "amountAutoCorrected": True,
     }
 
 
 # Safety net for the Total Basic Amount summary cell: on this template it always equals
-# the sum of every line item's Amount column. Only recomputes it when every line item's
-# Amount is itself confidently known (exact, or fixed by the row-arithmetic repair above) -
-# never sums up numbers that are themselves uncertain.
+# the sum of every line item's Amount column. Only recomputes it when every single line
+# item's Amount is well-formed money (see _is_trustworthy_money) - a merely "confidently
+# formatted" value isn't enough basis, since a well-formatted Quantity/Basic pair can
+# still combine into a wrong-but-clean-looking Amount (a genuinely misread Quantity, for
+# example) - requiring every summand itself look exactly as printed on this template is
+# the only cross-check cheap enough to trust here without inventing anything.
 def _apply_tba_cross_check(summary: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
     if not items:
         return summary
     amounts: list[float] = []
     for item in items:
-        if item.get("amountConfidence", 0) < CONFIDENCE_CORRECTED_THRESHOLD:
+        if not _is_trustworthy_money(item.get("amount")):
             return summary  # at least one row's amount isn't trustworthy - don't guess
-        parsed = _parse_money(item.get("amount"))
-        if parsed is None:
-            return summary
+        parsed = _parse_money(item["amount"])
+        assert parsed is not None  # _is_trustworthy_money already guarantees this parses
         amounts.append(parsed)
 
     computed_tba = round(sum(amounts), 2)
