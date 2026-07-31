@@ -31,6 +31,13 @@ CONSIGNEE COLUMN OCR TEXT:
 - consignorGstin (labeled "GSTIN No", often prefixed with a company name like "VECV GSTIN No")
 - consignorPan (labeled "PAN No", often prefixed with a company name like "VECV PAN No")
 - requestNo (labeled "Request No." - OCR may render this as "Request Ne" or similar)
+
+PO No and Request No sit on adjacent lines in the CONSIGNOR column and are easy to
+mix up. Extract each strictly from its OWN label, never from the other's. If you end up
+with a value for only one of these two fields and the other is null, re-check the OCR
+text below the missing field's own label before finalizing - do not repeat one field's
+value into the other's key, and do not leave a field null if a value clearly follows its
+own label.
 - irnNo (labeled "IRN No" - this field is frequently blank; return null if no value follows the label)
 
 CONSIGNOR COLUMN OCR TEXT:
