@@ -49,7 +49,7 @@ def split_into_columns(lines: list[dict[str, Any]]) -> tuple[str, str]:
 
 async def process_part1(file_bytes: bytes, mime_type: str) -> dict[str, Any]:
     image = _load_image_for_ocr(file_bytes, mime_type)
-    processed = preprocessing.assess_and_preprocess(image)
+    processed, _report = preprocessing.prepare_for_ocr(image, part=1)
 
     timeout = (
         OCR_TIMEOUT_SECONDS_PDF if mime_type == "application/pdf" else OCR_TIMEOUT_SECONDS_IMAGE

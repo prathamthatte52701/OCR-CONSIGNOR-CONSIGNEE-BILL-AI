@@ -8,6 +8,14 @@ import { cn } from "../lib/utils";
 
 const PAGE_SIZE = 30;
 
+const RANGE_OPTIONS = [
+  { value: "", label: "All time" },
+  { value: "today", label: "Today" },
+  { value: "week", label: "This Week" },
+  { value: "month", label: "This Month" },
+  { value: "year", label: "This Year" },
+];
+
 const STATUS_STYLES = {
   processed: "bg-accent/15 text-accent",
   processing: "bg-warning/15 text-warning",
@@ -22,12 +30,14 @@ export default function DocumentsPage() {
   const [date, setDate] = useState(searchParams.get("date") || "");
 
   const page = Number(searchParams.get("page") || 1);
+  const range = searchParams.get("range") || "";
   const query = useDocumentsList({
     page,
     limit: PAGE_SIZE,
     invoiceNo: searchParams.get("invoiceNo") || undefined,
     consigneeCode: searchParams.get("consigneeCode") || undefined,
     date: searchParams.get("date") || undefined,
+    range: range || undefined,
   });
 
   const runSearch = (e) => {
@@ -36,12 +46,24 @@ export default function DocumentsPage() {
     if (invoiceNo) params.invoiceNo = invoiceNo;
     if (consigneeCode) params.consigneeCode = consigneeCode;
     if (date) params.date = date;
+    if (range) params.range = range;
     params.page = "1";
     setSearchParams(params);
   };
 
   const goToPage = (p) => {
     setSearchParams({ ...Object.fromEntries(searchParams), page: String(p) });
+  };
+
+  const selectRange = (value) => {
+    const params = Object.fromEntries(searchParams);
+    if (value) {
+      params.range = value;
+    } else {
+      delete params.range;
+    }
+    params.page = "1";
+    setSearchParams(params);
   };
 
   const total = query.data?.total ?? 0;
@@ -74,6 +96,25 @@ export default function DocumentsPage() {
           Search
         </button>
       </form>
+
+      <div className="flex flex-wrap items-center gap-2 mb-6">
+        <span className="text-xs text-text-muted">Uploaded:</span>
+        {RANGE_OPTIONS.map((opt) => (
+          <button
+            key={opt.value || "all"}
+            type="button"
+            onClick={() => selectRange(opt.value)}
+            className={cn(
+              "px-3 py-1 rounded-full border text-xs font-medium",
+              range === opt.value
+                ? "bg-accent text-bg border-accent"
+                : "border-border text-text-muted hover:border-accent/50"
+            )}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
 
       {query.isLoading ? (
         <LoadingState message="Loading documents..." />

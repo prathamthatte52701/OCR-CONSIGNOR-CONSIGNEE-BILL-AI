@@ -70,10 +70,16 @@ def build_line_items(item_rows: list[list[tuple[str, int]]]) -> list[dict[str, s
 
 async def process_part2(file_bytes: bytes, mime_type: str) -> dict[str, Any]:
     # Unlike Part 1's flat-text OCR, generic OpenCV preprocessing (deskew/CLAHE/lighting-
-    # normalize) was confirmed to degrade PP-Structure's table cell detection on real samples
-    # - it subtly shifts empty-cell positions, corrupting column alignment. PP-Structure has
-    # its own internal doc-orientation classification, so the raw image is used as-is.
+    # normalize/upscale) was confirmed to degrade PP-Structure's table cell detection on real
+    # samples - it subtly shifts empty-cell positions, corrupting column alignment, and even
+    # upscaling a genuinely low-res page recovered 0/3 table detections while shortening OCR
+    # text on 2/3 (see preprocessing.py: PART_ALLOWED_STEPS). PP-Structure has its own internal
+    # doc-orientation classification, so gross rotation needs nothing here either. The shared
+    # quality gate therefore runs with part=2, which allows zero steps through - every metric is
+    # still measured and logged (useful for debugging a bad extraction), but the image passed
+    # to PP-Structure is always byte-for-byte identical to the input, exactly as before.
     image = _load_image_for_ocr(file_bytes, mime_type)
+    image, _report = preprocessing.prepare_for_ocr(image, part=2)
 
     timeout = (
         TABLE_TIMEOUT_SECONDS_PDF if mime_type == "application/pdf" else TABLE_TIMEOUT_SECONDS_IMAGE

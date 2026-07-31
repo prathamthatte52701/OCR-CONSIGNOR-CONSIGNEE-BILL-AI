@@ -278,12 +278,31 @@ async def upload_document(
     return UploadResponse(id=str(doc_id), upload_status="processing")
 
 
+def _upload_range_start_utc(range_key: str, now: datetime) -> datetime:
+    """Start of the UTC "upload date" bucket for `range_key` (today/week/month/year),
+    evaluated against `now` (must be tz-aware UTC). Week starts Monday. No upper bound is
+    needed: createdAt is always <= the instant the query runs, so an open-ended $gte is
+    equivalent to a [start, now) window without racing the clock between capturing `now`
+    and executing the query."""
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if range_key == "today":
+        return start_of_day
+    if range_key == "week":
+        return start_of_day - timedelta(days=now.weekday())  # Monday == weekday() 0
+    if range_key == "month":
+        return start_of_day.replace(day=1)
+    if range_key == "year":
+        return start_of_day.replace(month=1, day=1)
+    raise ValueError(f"Unknown range: {range_key}")  # unreachable - Query() pattern validates first
+
+
 @router.get("", response_model=DocumentListResponse)
 async def list_documents(
     current_user: CurrentUser = Depends(get_current_user),
     invoice_no: str | None = Query(None, alias="invoiceNo"),
     consignee_code: str | None = Query(None, alias="consigneeCode"),
     date: str | None = Query(None),
+    date_range: str | None = Query(None, alias="range", pattern="^(today|week|month|year)$"),
     page: int = Query(1, ge=1),
     limit: int = Query(30, ge=1, le=100),
 ) -> DocumentListResponse:
@@ -295,6 +314,8 @@ async def list_documents(
         query["consigneeCode"] = {"$regex": re.escape(consignee_code), "$options": "i"}
     if date:
         query["challanDate"] = {"$regex": re.escape(date)}
+    if date_range:
+        query["createdAt"] = {"$gte": _upload_range_start_utc(date_range, datetime.now(UTC))}
 
     total = await db.documents.count_documents(query)
     cursor = db.documents.find(query).sort("createdAt", -1).skip((page - 1) * limit).limit(limit)
