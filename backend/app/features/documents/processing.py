@@ -179,6 +179,15 @@ def _apply_tba_cross_check(summary: dict[str, Any], items: list[dict[str, Any]])
     if current_tba is not None and abs(current_tba - computed_tba) < 0.01:
         return summary  # already consistent
 
+    # A row can go missing entirely (e.g. its text merges into the summary cell during
+    # table parsing) while every row that WAS captured still looks individually
+    # well-formed - on this template a missing row can only ever make computed_tba too
+    # LOW, never too high, so a computed total that's smaller than what's already printed
+    # is itself evidence of an incomplete row set, not a correction. Only ever raise TBA
+    # to match the rows, never lower an existing well-formed value below what it read.
+    if current_tba is not None and computed_tba < current_tba:
+        return summary
+
     return {
         **summary,
         "totalBasicAmount": _format_money(computed_tba),
