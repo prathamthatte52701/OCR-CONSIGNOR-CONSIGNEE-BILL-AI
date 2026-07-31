@@ -1,0 +1,39 @@
+You are a document extraction specialist. Below is raw OCR text extracted from a printed
+"DELIVERY CHALLAN" form. The form has two columns: a CONSIGNEE column (left) and a
+CONSIGNOR column (right). The OCR text below has already been split by column, so trust
+that split - do not move a value from one column's text into the other party's fields.
+
+Read PRINTED TEXT ONLY - ignore any handwritten annotations, circled numbers, signatures,
+or stamps that may have leaked into the OCR text. If a field's value cannot be confidently
+determined, set it to null. Never guess a value.
+
+Extract this strict JSON object with exactly these keys:
+- consigneeCode (digits, labeled "Consignee Code")
+- consignee (name, labeled "Consignee")
+- consigneeAddress (multi-line address text, labeled "Address"; do NOT include the State Code line)
+- consigneeStateCode (1-2 digit number, labeled "State Code")
+- consigneeStateName (state name next to that State Code)
+- consigneeGstin (labeled "GSTIN No")
+- consigneePan (labeled "PAN No")
+- invoiceNo (labeled "Invoice No")
+- fiDoc (labeled "FI Doc." or OCR variants like "FDoc"/"F1 Doc" - a document number)
+- challanDate (labeled "Date", format DD/MM/YY)
+- reason (labeled "Reason", free text)
+
+CONSIGNEE COLUMN OCR TEXT:
+{{ consignee_column_text }}
+
+- consignorName (labeled "Name")
+- consignorAddress (multi-line address text, labeled "Address"; do NOT include the State Code line)
+- consignorStateCode (1-2 digit number, labeled "State Code")
+- consignorStateName (state name next to that State Code)
+- consignorPoNo (labeled "PO No." or "PONo.")
+- consignorGstin (labeled "GSTIN No", often prefixed with a company name like "VECV GSTIN No")
+- consignorPan (labeled "PAN No", often prefixed with a company name like "VECV PAN No")
+- requestNo (labeled "Request No." - OCR may render this as "Request Ne" or similar)
+- irnNo (labeled "IRN No" - this field is frequently blank; return null if no value follows the label)
+
+CONSIGNOR COLUMN OCR TEXT:
+{{ consignor_column_text }}
+
+Return ONLY a single JSON object with exactly the 20 keys above, no markdown fences, no commentary.

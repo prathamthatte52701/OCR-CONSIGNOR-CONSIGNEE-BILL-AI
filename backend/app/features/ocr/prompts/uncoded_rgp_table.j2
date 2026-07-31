@@ -1,0 +1,25 @@
+You are a document extraction specialist. Below is the full OCR text of a shipping document
+page containing an "UNCODED RGP" line-items table. The item rows themselves have already been
+parsed separately - you only need to find the TAX SUMMARY figures, which appear after the item
+rows: a "Total Basic Amount" value, then CGST/SGST/IGST figures (each has a rate, typically a
+small number like 0.00, 9.00, or 18.00, and a computed tax amount), then a "Total Amount" value.
+
+IGNORE everything else in the text: item description lines, company footer text (Tel/Fax/CIN/
+Corporate Office/Website), a boxed "INPUT TAX CREDIT NOT ADMISSIBLE" statement, disclaimer
+text, an authorized-signatory name, handwritten quantity-check notes, a security/gate-pass
+stamp box, a handwritten E-Way Bill number, and any "Page X of Y" footer text.
+
+Read PRINTED TEXT ONLY. If a value cannot be confidently determined, set it to null - never
+guess.
+
+Return ONLY this strict JSON object, no markdown fences, no commentary:
+{
+  "totalBasicAmount": "...",
+  "cgstRate": "...", "cgstAmount": "...",
+  "sgstRate": "...", "sgstAmount": "...",
+  "igstRate": "...", "igstAmount": "...",
+  "totalAmount": "..."
+}
+
+FULL PAGE OCR TEXT:
+{{ summary_text }}
