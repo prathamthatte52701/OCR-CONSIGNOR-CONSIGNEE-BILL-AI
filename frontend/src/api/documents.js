@@ -13,11 +13,15 @@ export const documentsApi = {
   correct: (id, field, value) =>
     client.patch(`/documents/${id}/correct`, { field, value }).then((r) => r.data),
   reprocess: (id) => client.post(`/documents/${id}/reprocess`).then((r) => r.data),
-  softDelete: (id) => client.delete(`/documents/${id}`).then((r) => r.data),
+  deleteDocument: (id) => client.delete(`/documents/${id}`).then((r) => r.data),
   purgeFiles: (id) => client.post(`/documents/${id}/purge-files`).then((r) => r.data),
-  purgeRangePreview: (params) =>
-    client.get("/documents/purge-range/preview", { params }).then((r) => r.data),
-  purgeRange: (data) => client.delete("/documents/purge-range", { data }).then((r) => r.data),
-  purgeAll: (data) => client.delete("/documents/purge-all", { data }).then((r) => r.data),
   downloadUrl: (id, part) => `/api/documents/${id}/download/${part}`,
+  downloadAll: (params) =>
+    client
+      .post("/documents/download-all", null, { params, responseType: "blob" })
+      .then((r) => ({
+        blob: r.data,
+        included: Number(r.headers["x-included-count"] ?? 0),
+        skipped: Number(r.headers["x-skipped-count"] ?? 0),
+      })),
 };

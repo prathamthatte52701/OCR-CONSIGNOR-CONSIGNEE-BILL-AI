@@ -96,7 +96,10 @@ def _fake_current_user() -> CurrentUser:
 @pytest.fixture(scope="module")
 def client() -> Iterator[TestClient]:
     app.dependency_overrides[get_current_user] = _fake_current_user
-    with TestClient(app) as c:
+    # raise_server_exceptions=False so an unhandled exception in a route surfaces as the real
+    # 500 response a production ASGI server would return, instead of re-raising into the test
+    # (the default, meant for debugging) - needed to test the orphan-tracking failure paths.
+    with TestClient(app, raise_server_exceptions=False) as c:
         yield c
     app.dependency_overrides.pop(get_current_user, None)
 
@@ -124,7 +127,6 @@ async def _cleanup_seeded_docs(db: AsyncIOMotorDatabase) -> AsyncIterator[None]:
 def _seed(created_at: datetime, **overrides: object) -> dict[str, Any]:
     doc = {
         "userId": _TEST_USER_ID,
-        "isDeleted": False,
         "uploadStatus": "processed",
         "createdAt": created_at,
         "invoiceNo": "BASE-INV",
@@ -212,3 +214,93 @@ async def test_range_composes_with_invoice_no_as_and_not_or(
     body = resp.json()
     assert body["total"] == 1
     assert body["items"][0]["invoiceNo"] == "MATCH-BOTH"
+
+
+# --- GridFS orphan tracking (Feature 2): purge-files / delete keep their existing status-code
+# behavior unchanged, orphan tracking is purely additive on top. ------------------------------
+
+
+@pytest.fixture(autouse=True)
+async def _cleanup_seeded_orphans(db: AsyncIOMotorDatabase) -> AsyncIterator[None]:
+    yield
+    await db.orphanedfiles.delete_many({"userId": _TEST_USER_ID})
+
+
+async def test_purge_files_endpoint_records_orphan_and_propagates_failure(
+    db: AsyncIOMotorDatabase, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.features.documents.router as documents_router
+
+    fake_file_id = ObjectId()
+
+    async def _always_fail(file_id: ObjectId) -> None:
+        raise RuntimeError("simulated GridFS outage")
+
+    monkeypatch.setattr(documents_router, "delete_file", _always_fail)
+
+    result = await db.documents.insert_one(
+        _seed(
+            datetime.now(UTC),
+            invoiceNo="PURGE-FAIL",
+            part1GridFsFileId=fake_file_id,
+            part1FilePurged=False,
+        )
+    )
+    doc_id = result.inserted_id
+
+    resp = client.post(f"/api/documents/{doc_id}/purge-files")
+    assert resp.status_code == 500
+
+    doc = await db.documents.find_one({"_id": doc_id})
+    assert doc is not None
+    assert doc.get("part1FilePurged") is not True  # failed delete must not be marked purged
+
+    orphan = await db.orphanedfiles.find_one({"fileId": fake_file_id})
+    assert orphan is not None
+    assert orphan["documentId"] == doc_id
+    assert orphan["userId"] == _TEST_USER_ID
+    assert "simulated GridFS outage" in orphan["lastError"]
+
+
+async def test_delete_endpoint_still_succeeds_when_gridfs_fails(
+    db: AsyncIOMotorDatabase, client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.features.documents.router as documents_router
+
+    fake_file_id = ObjectId()
+
+    async def _always_fail(file_id: ObjectId) -> None:
+        raise RuntimeError("simulated GridFS outage")
+
+    monkeypatch.setattr(documents_router, "delete_file", _always_fail)
+
+    result = await db.documents.insert_one(
+        _seed(datetime.now(UTC), invoiceNo="DELETE-FAIL", part1GridFsFileId=fake_file_id)
+    )
+    doc_id = result.inserted_id
+
+    resp = client.delete(f"/api/documents/{doc_id}")
+    assert resp.status_code == 200  # best-effort purge failure must never block the delete
+
+    orphan = await db.orphanedfiles.find_one({"fileId": fake_file_id})
+    assert orphan is not None
+    assert orphan["documentId"] == doc_id
+
+
+async def test_successful_deletion_creates_zero_orphan_records(
+    db: AsyncIOMotorDatabase, client: TestClient
+) -> None:
+    # A file id that was never actually uploaded to GridFS - delete_file() swallows the
+    # resulting NoFile internally (that's not a real failure, the file is already gone), so
+    # no exception ever reaches _best_effort_purge_files and no orphan should be recorded.
+    never_uploaded_file_id = ObjectId()
+    result = await db.documents.insert_one(
+        _seed(datetime.now(UTC), invoiceNo="CLEAN-DELETE", part1GridFsFileId=never_uploaded_file_id)
+    )
+    doc_id = result.inserted_id
+
+    resp = client.delete(f"/api/documents/{doc_id}")
+    assert resp.status_code == 200
+
+    orphan = await db.orphanedfiles.find_one({"fileId": never_uploaded_file_id})
+    assert orphan is None

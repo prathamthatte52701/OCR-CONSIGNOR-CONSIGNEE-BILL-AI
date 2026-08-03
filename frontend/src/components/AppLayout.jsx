@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { LayoutDashboard, Upload, FileStack, CircleHelp, LogOut, Menu, X } from "lucide-react";
+import { LayoutDashboard, Upload, FileStack, History, CircleHelp, LogOut, Menu, X } from "lucide-react";
 import { useState } from "react";
 import { useAuthStore } from "../store/authStore";
 import { useLogout } from "../hooks/useAuth";
@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/upload", label: "Upload", icon: Upload },
   { to: "/documents", label: "Documents", icon: FileStack },
+  { to: "/activity", label: "My Activity", icon: History },
   { to: "/help", label: "Help", icon: CircleHelp },
 ];
 

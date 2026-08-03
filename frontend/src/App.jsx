@@ -3,6 +3,7 @@ import AppLayout from "./components/AppLayout";
 import RequireAuth from "./components/RequireAuth";
 import ServerDownBanner from "./components/ServerDownBanner";
 import GlobalConfirmDialog from "./components/GlobalConfirmDialog";
+import LoadingState from "./components/LoadingState";
 import LoginPage from "./pages/LoginPage";
 import SignupPage from "./pages/SignupPage";
 import ForgotPasswordPage from "./pages/ForgotPasswordPage";
@@ -11,10 +12,18 @@ import UploadPage from "./pages/UploadPage";
 import DocumentsPage from "./pages/DocumentsPage";
 import DocumentDetailPage from "./pages/DocumentDetailPage";
 import ProfilePage from "./pages/ProfilePage";
+import ActivityPage from "./pages/ActivityPage";
 import HelpPage from "./pages/HelpPage";
 import NotFoundPage from "./pages/NotFoundPage";
+import { useInitAuth } from "./hooks/useInitAuth";
 
 export default function App() {
+  const isInitializing = useInitAuth();
+
+  if (isInitializing) {
+    return <LoadingState message="Checking session..." />;
+  }
+
   return (
     <>
       <ServerDownBanner />
@@ -31,6 +40,7 @@ export default function App() {
             <Route path="/documents" element={<DocumentsPage />} />
             <Route path="/documents/:id" element={<DocumentDetailPage />} />
             <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/activity" element={<ActivityPage />} />
             <Route path="/help" element={<HelpPage />} />
           </Route>
         </Route>

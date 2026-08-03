@@ -14,22 +14,28 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from loguru import logger
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.database import close_mongo_connection, connect_to_mongo
+from app.core.logging_config import configure_logging
 from app.core.rate_limit import limiter
 from app.core.security_headers import SecurityHeadersMiddleware
 from app.features.admin.router import router as admin_router
 from app.features.auth.router import router as auth_router
 from app.features.documents.router import router as documents_router
 
+configure_logging()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     await connect_to_mongo()
+    logger.info("Application startup complete (env={})", settings.environment)
     yield
+    logger.info("Application shutdown")
     await close_mongo_connection()
 
 
@@ -52,6 +58,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["X-Included-Count", "X-Skipped-Count"],
 )
 
 

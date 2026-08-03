@@ -44,7 +44,7 @@ export default function AdminDocumentDetailPage() {
   const handleDelete = async () => {
     try {
       await adminApi.deleteDocument(id);
-      toast.success("Document deleted.");
+      toast.success("Document permanently deleted.");
       navigate("/documents");
     } catch (err) {
       toast.error(err.userMessage || "Could not delete.");
@@ -55,10 +55,10 @@ export default function AdminDocumentDetailPage() {
   const handlePurge = async () => {
     try {
       await adminApi.purgeDocumentFiles(id);
-      toast.success("Files purged. Data preserved.");
+      toast.success("Files deleted. Data preserved.");
       setDoc((d) => ({ ...d, part1FilePurged: true, part2FilePurged: true }));
     } catch (err) {
-      toast.error(err.userMessage || "Could not purge files.");
+      toast.error(err.userMessage || "Could not delete files.");
     }
     setConfirmAction(null);
   };
@@ -85,7 +85,7 @@ export default function AdminDocumentDetailPage() {
             disabled={doc.part1FilePurged && doc.part2FilePurged}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-warning/40 text-warning hover:bg-warning/10 disabled:opacity-40"
           >
-            <FileX2 size={13} /> Purge files
+            <FileX2 size={13} /> File Delete
           </button>
           <button
             onClick={() => setConfirmAction("delete")}
@@ -138,19 +138,19 @@ export default function AdminDocumentDetailPage() {
 
       <ConfirmModal
         open={confirmAction === "delete"}
-        title="Delete this document?"
-        message="This hides the document from the owner's list."
-        severity="normal"
+        title="Permanently delete this document?"
+        message="This permanently removes the document record and its original files. There is no undo."
+        severity="critical"
         confirmLabel="Delete"
         onConfirm={handleDelete}
         onCancel={() => setConfirmAction(null)}
       />
       <ConfirmModal
         open={confirmAction === "purge"}
-        title="Permanently purge original files?"
+        title="Permanently delete the original files?"
         message="Removes the stored Part 1 and Part 2 files. Extracted data is unaffected. This cannot be undone."
         severity="critical"
-        confirmLabel="Purge files"
+        confirmLabel="File Delete"
         onConfirm={handlePurge}
         onCancel={() => setConfirmAction(null)}
       />

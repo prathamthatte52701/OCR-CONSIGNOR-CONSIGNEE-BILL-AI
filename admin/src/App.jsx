@@ -9,6 +9,7 @@ import AdminUserDetailPage from "./pages/AdminUserDetailPage";
 import AdminDocumentsPage from "./pages/AdminDocumentsPage";
 import AdminDocumentDetailPage from "./pages/AdminDocumentDetailPage";
 import AdminLogsPage from "./pages/AdminLogsPage";
+import AdminOrphanedFilesPage from "./pages/AdminOrphanedFilesPage";
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/documents" element={<AdminDocumentsPage />} />
             <Route path="/documents/:id" element={<AdminDocumentDetailPage />} />
             <Route path="/logs" element={<AdminLogsPage />} />
+            <Route path="/orphaned-files" element={<AdminOrphanedFilesPage />} />
           </Route>
         </Route>
 

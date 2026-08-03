@@ -38,7 +38,13 @@ export default function GlobalConfirmDialog() {
         styles.ring
       )}
     >
-      <div className="p-5">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (phraseOk) dialog.onConfirm();
+        }}
+        className="p-5"
+      >
         <h2 className="text-lg font-semibold mb-2">{dialog.title}</h2>
         <p className="text-sm text-text-muted whitespace-pre-line">{dialog.message}</p>
 
@@ -58,20 +64,21 @@ export default function GlobalConfirmDialog() {
 
         <div className="mt-5 flex justify-end gap-2">
           <button
+            type="button"
             onClick={dialog.onCancel}
             className="px-4 py-2 rounded text-sm border border-border hover:bg-surface-raised"
           >
             Cancel
           </button>
           <button
-            onClick={dialog.onConfirm}
+            type="submit"
             disabled={!phraseOk}
             className={cn("px-4 py-2 rounded text-sm font-medium disabled:opacity-40", styles.button)}
           >
             {dialog.confirmLabel}
           </button>
         </div>
-      </div>
+      </form>
     </dialog>
   );
 }

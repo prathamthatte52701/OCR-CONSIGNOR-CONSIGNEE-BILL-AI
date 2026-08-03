@@ -1,12 +1,24 @@
 import { useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
-import { AlertTriangle, Layers } from "lucide-react";
+import { AlertTriangle, Layers, Download } from "lucide-react";
+import { toast } from "sonner";
 import { useDocumentsList } from "../hooks/useDocumentsQueries";
+import { documentsApi } from "../api/documents";
 import LoadingState from "../components/LoadingState";
 import { formatIST } from "../lib/formatDate";
 import { cn } from "../lib/utils";
 
 const PAGE_SIZE = 30;
+
+// Feature 7: card border reflects the worst (minimum) field confidence across the whole
+// document. `minConfidence` is absent on documents processed before this field existed -
+// that's the neutral/fallback case, not an error, so it falls through to the plain border.
+function confidenceBorderClass(minConfidence) {
+  if (typeof minConfidence !== "number") return "border border-border";
+  if (minConfidence >= 90) return "border-2 border-accent";
+  if (minConfidence >= 70) return "border-2 border-warning";
+  return "border-2 border-danger";
+}
 
 const RANGE_OPTIONS = [
   { value: "", label: "All time" },
@@ -31,14 +43,44 @@ export default function DocumentsPage() {
 
   const page = Number(searchParams.get("page") || 1);
   const range = searchParams.get("range") || "";
-  const query = useDocumentsList({
+  const listParams = {
     page,
     limit: PAGE_SIZE,
     invoiceNo: searchParams.get("invoiceNo") || undefined,
     consigneeCode: searchParams.get("consigneeCode") || undefined,
     date: searchParams.get("date") || undefined,
     range: range || undefined,
-  });
+  };
+  const query = useDocumentsList(listParams);
+  const [downloadingAll, setDownloadingAll] = useState(false);
+
+  const handleDownloadAll = async () => {
+    setDownloadingAll(true);
+    try {
+      const { blob, included, skipped } = await documentsApi.downloadAll(listParams);
+      if (included === 0) {
+        toast.error("Nothing to download - every document's files on this page are gone.");
+        return;
+      }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "documents.zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(
+        `Downloaded ${included} of ${included + skipped} document${included + skipped === 1 ? "" : "s"}${
+          skipped ? ` (${skipped} skipped)` : ""
+        }.`
+      );
+    } catch (error) {
+      toast.error(error.userMessage || "Could not download documents.");
+    } finally {
+      setDownloadingAll(false);
+    }
+  };
 
   const runSearch = (e) => {
     e.preventDefault();
@@ -71,7 +113,18 @@ export default function DocumentsPage() {
 
   return (
     <div>
-      <h1 className="text-xl font-semibold mb-4">Documents</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-xl font-semibold">Documents</h1>
+        <button
+          type="button"
+          onClick={handleDownloadAll}
+          disabled={downloadingAll || !query.data?.items.length}
+          className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-sm font-medium hover:border-accent/50 disabled:opacity-30"
+        >
+          <Download size={14} />
+          {downloadingAll ? "Zipping..." : "Download All"}
+        </button>
+      </div>
 
       <form onSubmit={runSearch} className="flex flex-wrap gap-2 mb-6 bg-surface border border-border rounded-lg p-3">
         <input
@@ -122,14 +175,20 @@ export default function DocumentsPage() {
         <p className="text-sm text-text-muted py-10 text-center">No documents found.</p>
       ) : (
         <div className="space-y-2">
-          {query.data.items.map((doc) => (
+          {query.data.items.map((doc, index) => (
             <Link
               key={doc.id}
               to={`/documents/${doc.id}`}
-              className="flex items-center justify-between gap-3 bg-surface border border-border rounded-lg px-4 py-3 hover:border-accent/50"
+              className={cn(
+                "flex items-center justify-between gap-3 bg-surface rounded-lg px-4 py-3 hover:border-accent/50",
+                confidenceBorderClass(doc.minConfidence)
+              )}
             >
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
+                  <span className="text-xs text-text-muted shrink-0">
+                    #{(page - 1) * PAGE_SIZE + index + 1}
+                  </span>
                   <span className="font-medium text-sm truncate">
                     {doc.invoiceNo || "(no invoice no.)"}
                   </span>

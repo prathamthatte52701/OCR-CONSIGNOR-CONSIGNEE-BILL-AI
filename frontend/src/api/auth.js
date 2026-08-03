@@ -8,4 +8,5 @@ export const authApi = {
   changePassword: (data) => client.post("/auth/change-password", data).then((r) => r.data),
   forgotPasswordVerify: (data) => client.post("/auth/forgot-password/verify", data).then((r) => r.data),
   forgotPasswordReset: (data) => client.post("/auth/forgot-password/reset", data).then((r) => r.data),
+  activity: (params) => client.get("/auth/me/activity", { params }).then((r) => r.data),
 };

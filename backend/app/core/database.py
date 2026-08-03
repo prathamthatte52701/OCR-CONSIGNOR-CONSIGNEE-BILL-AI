@@ -1,6 +1,7 @@
 """Motor singleton connection + idempotent index creation. Never reconnect per-request."""
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
+from pymongo.errors import OperationFailure
 
 from app.core.config import settings
 
@@ -40,9 +41,16 @@ def get_gridfs() -> AsyncIOMotorGridFSBucket:
 
 async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.users.create_index("email", unique=True)
-    await db.documents.create_index([("userId", 1), ("isDeleted", 1), ("createdAt", -1)])
+    try:
+        # Superseded by the userId+createdAt index below now that isDeleted no longer exists
+        # on Document (soft-delete was removed) - drop the stale one if an earlier run created it.
+        await db.documents.drop_index("userId_1_isDeleted_1_createdAt_-1")
+    except OperationFailure:
+        pass  # index never existed on this database - nothing to drop
+    await db.documents.create_index([("userId", 1), ("createdAt", -1)])
     await db.documents.create_index([("userId", 1), ("invoiceNo", 1)])
     await db.documents.create_index([("userId", 1), ("consigneeCode", 1)])
     await db.corrections.create_index("documentId")
     await db.auditlogs.create_index([("userId", 1), ("createdAt", -1)])
     await db.auditlogs.create_index("action")
+    await db.orphanedfiles.create_index("fileId", unique=True)

@@ -33,8 +33,6 @@ class LineItem(CamelModel):
 
 class Document(MongoBaseModel):
     user_id: PyObjectId
-    is_deleted: bool = False
-    deleted_at: datetime | None = None
 
     upload_status: Literal["uploaded", "processing", "processed", "failed"] = "uploaded"
     processing_error: str | None = None
@@ -58,6 +56,7 @@ class Document(MongoBaseModel):
 
     multi_page: bool = False
     has_low_confidence_fields: bool = False
+    min_confidence: int | None = None
 
     # Part 1: consignee block
     consignee_code: str | None = None

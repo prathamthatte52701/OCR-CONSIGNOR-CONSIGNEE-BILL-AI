@@ -204,6 +204,15 @@ def _has_low_confidence(fields: dict[str, Any]) -> bool:
     )
 
 
+def _min_confidence(fields: dict[str, Any]) -> int | None:
+    values = [
+        value
+        for key, value in fields.items()
+        if key.endswith("Confidence") and isinstance(value, int)
+    ]
+    return min(values) if values else None
+
+
 async def run_full_pipeline(
     part1_bytes: bytes, part1_mime: str, part2_bytes: bytes, part2_mime: str
 ) -> dict[str, Any]:
@@ -228,5 +237,10 @@ async def run_full_pipeline(
     update["hasLowConfidenceFields"] = _has_low_confidence(update) or _has_low_confidence(
         line_item_confidences
     )
+
+    header_and_summary_min = _min_confidence(update)
+    line_item_min = _min_confidence(line_item_confidences)
+    candidates = [v for v in (header_and_summary_min, line_item_min) if v is not None]
+    update["minConfidence"] = min(candidates) if candidates else None
 
     return update

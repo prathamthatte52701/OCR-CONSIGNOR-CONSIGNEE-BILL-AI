@@ -22,18 +22,6 @@ class CorrectRequest(CamelModel):
     value: str | None = None
 
 
-class PurgeAllRequest(CamelModel):
-    password: str
-    confirmation_phrase: str
-
-
-class PurgeRangeRequest(CamelModel):
-    password: str
-    confirmation_phrase: str
-    older_than_months: int | None = None
-    year: int | None = None
-
-
 class StatsResponse(CamelModel):
     total: int
     processed: int

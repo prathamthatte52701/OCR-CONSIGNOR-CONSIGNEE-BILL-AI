@@ -4,7 +4,7 @@ import { useDocument } from "../hooks/useDocumentsQueries";
 import {
   useCorrectField,
   useReprocessDocument,
-  useSoftDeleteDocument,
+  useDeleteDocument,
   usePurgeFiles,
 } from "../hooks/useDocumentMutations";
 import { useDialogStore } from "../store/dialogStore";
@@ -85,7 +85,7 @@ export default function DocumentDetailPage() {
   const { data: doc, isLoading } = useDocument(id);
   const correctField = useCorrectField(id);
   const reprocess = useReprocessDocument(id);
-  const softDelete = useSoftDeleteDocument();
+  const deleteDocument = useDeleteDocument();
   const purgeFiles = usePurgeFiles(id);
   const confirm = useDialogStore((s) => s.confirm);
 
@@ -109,14 +109,14 @@ export default function DocumentDetailPage() {
     if (ok) reprocess.mutate();
   };
 
-  const handleSoftDelete = async () => {
+  const handleDelete = async () => {
     const ok = await confirm({
-      title: "Delete this document?",
-      message: "This hides the document from your list. This action is not exposed as reversible.",
-      severity: "normal",
+      title: "Permanently delete this document?",
+      message: "This permanently removes the document record and its original files. There is no undo.",
+      severity: "critical",
       confirmLabel: "Delete",
     });
-    if (ok) softDelete.mutate(id);
+    if (ok) deleteDocument.mutate(id);
   };
 
   const handlePurgeFiles = async () => {
@@ -124,7 +124,7 @@ export default function DocumentDetailPage() {
       title: "Permanently delete original files?",
       message: "This permanently removes the stored Part 1 and Part 2 files to save space. Extracted data and field values are NOT affected and remain fully editable. This cannot be undone.",
       severity: "warning",
-      confirmLabel: "Purge files",
+      confirmLabel: "File Delete",
     });
     if (ok) purgeFiles.mutate();
   };
@@ -180,10 +180,10 @@ export default function DocumentDetailPage() {
             disabled={doc.part1FilePurged && doc.part2FilePurged}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-warning/40 text-warning hover:bg-warning/10 disabled:opacity-40"
           >
-            <FileX2 size={13} /> Purge files
+            <FileX2 size={13} /> File Delete
           </button>
           <button
-            onClick={handleSoftDelete}
+            onClick={handleDelete}
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-danger/40 text-danger hover:bg-danger/10"
           >
             <Trash2 size={13} /> Delete

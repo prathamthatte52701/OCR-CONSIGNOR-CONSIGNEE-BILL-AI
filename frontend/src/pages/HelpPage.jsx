@@ -24,12 +24,8 @@ const SECTIONS = [
     body: "It runs the whole extraction again on the original photos and replaces all current values with fresh ones - including any corrections you made by hand. Only use this if you want to start over.",
   },
   {
-    title: "What is the difference between Delete and Purge files?",
-    body: "Delete hides the document from your list. Purge files permanently removes the original photos to save storage space, but keeps all the extracted information intact - you can still see and edit the data afterward, you just can't re-download the original photos or reprocess.",
-  },
-  {
-    title: "What is the 'delete everything' option?",
-    body: "This is on your Profile page. It permanently erases every document and file you have uploaded. There is no undo. You must type a confirmation word and re-enter your password before it will let you proceed.",
+    title: "What is the difference between Delete and File Delete?",
+    body: "Delete permanently removes the document and its files entirely. File Delete only removes the original photos to save storage space, but keeps all the extracted information intact - you can still see and edit the data afterward, you just can't re-download the original photos or reprocess.",
   },
 ];
 

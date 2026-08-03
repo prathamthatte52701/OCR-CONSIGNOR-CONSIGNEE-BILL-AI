@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Users, FileStack, ScrollText, LogOut, ShieldAlert } from "lucide-react";
+import { LayoutDashboard, Users, FileStack, ScrollText, LogOut, ShieldAlert, FileWarning } from "lucide-react";
 import { useAdminAuth } from "../context/AdminAuthContext";
 import { cn } from "../lib/utils";
 
@@ -8,6 +8,7 @@ const NAV_ITEMS = [
   { to: "/users", label: "Users", icon: Users },
   { to: "/documents", label: "Documents", icon: FileStack },
   { to: "/logs", label: "Logs", icon: ScrollText },
+  { to: "/orphaned-files", label: "Orphaned Files", icon: FileWarning },
 ];
 
 export default function AdminLayout() {

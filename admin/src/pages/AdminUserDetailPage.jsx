@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Trash2 } from "lucide-react";
+import { Trash2, AlertTriangle } from "lucide-react";
 import { adminApi } from "../api/admin";
 import LoadingState from "../components/LoadingState";
 import ConfirmModal from "../components/ConfirmModal";
+import NukeDialog from "../components/NukeDialog";
 import { formatIST } from "../lib/formatDate";
+
+const NUKE_USER_PHRASE = "NUKE USER";
 
 export default function AdminUserDetailPage() {
   const { id } = useParams();
@@ -13,6 +16,8 @@ export default function AdminUserDetailPage() {
   const [user, setUser] = useState(null);
   const [docs, setDocs] = useState(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [nukeOpen, setNukeOpen] = useState(false);
+  const [nukeBusy, setNukeBusy] = useState(false);
 
   const load = () => {
     adminApi.user(id).then(setUser).catch((err) => toast.error(err.userMessage));
@@ -41,6 +46,20 @@ export default function AdminUserDetailPage() {
       toast.error(err.userMessage || "Could not delete user.");
     }
     setConfirmOpen(false);
+  };
+
+  const handleNuke = async (payload) => {
+    setNukeBusy(true);
+    try {
+      const data = await adminApi.nukeUser(id, payload);
+      toast.success(data.message || "Documents deleted.");
+      setNukeOpen(false);
+      load();
+    } catch (err) {
+      toast.error(err.userMessage || "Could not complete the nuke.");
+    } finally {
+      setNukeBusy(false);
+    }
   };
 
   if (!user) return <LoadingState message="Loading user..." />;
@@ -73,6 +92,12 @@ export default function AdminUserDetailPage() {
               >
                 <Trash2 size={12} /> Delete
               </button>
+              <button
+                onClick={() => setNukeOpen(true)}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-danger bg-danger/10 text-danger font-semibold hover:bg-danger/20"
+              >
+                <AlertTriangle size={12} /> Nuke this user
+              </button>
             </div>
           </div>
         </div>
@@ -103,6 +128,17 @@ export default function AdminUserDetailPage() {
         confirmLabel="Delete user"
         onConfirm={handleDelete}
         onCancel={() => setConfirmOpen(false)}
+      />
+
+      <NukeDialog
+        open={nukeOpen}
+        title={`Nuke documents for ${user.username}?`}
+        description={`This bulk-deletes this user's documents matching the range below. The user account itself is kept - only their documents (and originals) are removed. This cannot be undone.`}
+        confirmationPhrase={NUKE_USER_PHRASE}
+        confirmLabel="Nuke user's documents"
+        busy={nukeBusy}
+        onConfirm={handleNuke}
+        onCancel={() => setNukeOpen(false)}
       />
     </div>
   );

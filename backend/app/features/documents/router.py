@@ -1,8 +1,12 @@
-"""Document routes: dual-file upload, list/search, edit, reprocess, and the three delete
-tiers (soft-delete, purge-files, purge-all/purge-range). Per-user data isolation on every
-query - every filter includes userId, malformed ids return 400, other users' documents 404."""
+"""Document routes: dual-file upload, list/search, edit, reprocess, and the two delete
+tiers (delete - permanent, both record and files; purge-files - files only, record kept).
+Per-user data isolation on every query - every filter includes userId, malformed ids return
+400, other users' documents 404. Bulk age/date-range purge ("nuke") lives in
+app.features.admin.router - admin-only now, not user-facing."""
 
+import io
 import re
+import zipfile
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -15,7 +19,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from app.core.audit_log import log_action
 from app.core.database import get_database
 from app.core.object_id import is_valid_object_id
-from app.core.security import verify_password
+from app.core.orphaned_files import record_orphan
 from app.features.auth.dependencies import CurrentUser, get_current_user
 from app.features.documents.correction_service import apply_field_correction
 from app.features.documents.gridfs_service import delete_file, download_buffer, upload_buffer
@@ -23,8 +27,6 @@ from app.features.documents.processing import run_full_pipeline
 from app.features.documents.schemas import (
     CorrectRequest,
     DocumentListResponse,
-    PurgeAllRequest,
-    PurgeRangeRequest,
     StatsResponse,
     UploadResponse,
 )
@@ -40,9 +42,6 @@ _MAGIC_BYTES: dict[bytes, str] = {
     b"\x89PNG\r\n\x1a\n": "image/png",
     b"%PDF": "application/pdf",
 }
-
-CONFIRMATION_PHRASE_ALL = "DELETE"
-CONFIRMATION_PHRASE_RANGE = "DELETE RANGE"
 
 
 def _sniff_mime_type(data: bytes) -> str | None:
@@ -66,9 +65,7 @@ async def _get_owned_document(
 ) -> dict[str, Any]:
     if not is_valid_object_id(document_id):
         raise HTTPException(status_code=400, detail="Invalid document id.")
-    doc = await db.documents.find_one(
-        {"_id": ObjectId(document_id), "userId": user_id, "isDeleted": False}
-    )
+    doc = await db.documents.find_one({"_id": ObjectId(document_id), "userId": user_id})
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found.")
     return doc
@@ -80,29 +77,8 @@ async def _best_effort_purge_files(doc: dict[str, Any]) -> None:
         if file_id:
             try:
                 await delete_file(file_id)
-            except Exception:  # noqa: BLE001 - best-effort, never blocks the delete
-                pass
-
-
-def _build_range_filter(
-    user_id: ObjectId, older_than_months: int | None, year: int | None
-) -> dict[str, Any]:
-    if (older_than_months is None) == (year is None):
-        raise HTTPException(
-            status_code=400, detail="Provide exactly one of olderThanMonths or year."
-        )
-    query: dict[str, Any] = {"userId": user_id}
-    if older_than_months is not None:
-        if older_than_months not in (3, 6, 9):
-            raise HTTPException(status_code=400, detail="olderThanMonths must be 3, 6, or 9.")
-        cutoff = datetime.now(UTC) - timedelta(days=30 * older_than_months)
-        query["createdAt"] = {"$lt": cutoff}
-    else:
-        assert year is not None  # guaranteed by the XOR check above
-        start = datetime(year, 1, 1, tzinfo=UTC)
-        end = datetime(year + 1, 1, 1, tzinfo=UTC)
-        query["createdAt"] = {"$gte": start, "$lt": end}
-    return query
+            except Exception as exc:  # noqa: BLE001 - best-effort, never blocks the delete
+                await record_orphan(file_id, doc.get("_id"), doc.get("userId"), exc)
 
 
 async def _run_pipeline_and_update(
@@ -141,78 +117,6 @@ async def _run_pipeline_and_update(
         )
 
 
-# --- Nuke-tier routes registered BEFORE /{document_id} so Starlette's path matching picks
-# the literal route instead of trying (and failing) to parse "purge-all"/"purge-range" as
-# an ObjectId. ---
-
-
-@router.get("/purge-range/preview")
-async def preview_purge_range(
-    older_than_months: int | None = Query(None, alias="olderThanMonths"),
-    year: int | None = Query(None),
-    current_user: CurrentUser = Depends(get_current_user),
-) -> dict[str, int]:
-    db = get_database()
-    query = _build_range_filter(current_user.id, older_than_months, year)
-    count = await db.documents.count_documents(query)
-    return {"matchingCount": count}
-
-
-@router.delete("/purge-range")
-async def purge_range(
-    body: PurgeRangeRequest, current_user: CurrentUser = Depends(get_current_user)
-) -> dict[str, Any]:
-    if body.confirmation_phrase != CONFIRMATION_PHRASE_RANGE:
-        raise HTTPException(
-            status_code=400, detail=f"Type '{CONFIRMATION_PHRASE_RANGE}' exactly to confirm."
-        )
-    db = get_database()
-    user = await db.users.find_one({"_id": current_user.id})
-    if user is None or not verify_password(body.password, user["passwordHash"]):
-        await log_action(current_user.id, "purge_range_blocked", {"reason": "bad_password"})
-        raise HTTPException(status_code=400, detail="Incorrect password.")
-
-    query = _build_range_filter(current_user.id, body.older_than_months, body.year)
-    docs = await db.documents.find(query).to_list(length=None)
-    for doc in docs:
-        await _best_effort_purge_files(doc)
-    doc_ids = [doc["_id"] for doc in docs]
-    result = await db.documents.delete_many(query)
-    if doc_ids:
-        await db.corrections.delete_many({"documentId": {"$in": doc_ids}})
-    await log_action(current_user.id, "purge_range", {"deletedCount": result.deleted_count})
-    return {
-        "message": f"Deleted {result.deleted_count} documents.",
-        "deletedCount": result.deleted_count,
-    }
-
-
-@router.delete("/purge-all")
-async def purge_all(
-    body: PurgeAllRequest, current_user: CurrentUser = Depends(get_current_user)
-) -> dict[str, Any]:
-    if body.confirmation_phrase != CONFIRMATION_PHRASE_ALL:
-        raise HTTPException(
-            status_code=400, detail=f"Type '{CONFIRMATION_PHRASE_ALL}' exactly to confirm."
-        )
-    db = get_database()
-    user = await db.users.find_one({"_id": current_user.id})
-    if user is None or not verify_password(body.password, user["passwordHash"]):
-        await log_action(current_user.id, "purge_all_blocked", {"reason": "bad_password"})
-        raise HTTPException(status_code=400, detail="Incorrect password.")
-
-    docs = await db.documents.find({"userId": current_user.id}).to_list(length=None)
-    for doc in docs:
-        await _best_effort_purge_files(doc)
-    result = await db.documents.delete_many({"userId": current_user.id})
-    await db.corrections.delete_many({"userId": current_user.id})
-    await log_action(current_user.id, "purge_all", {"deletedCount": result.deleted_count})
-    return {
-        "message": f"All data deleted ({result.deleted_count} documents).",
-        "deletedCount": result.deleted_count,
-    }
-
-
 @router.post("/upload", status_code=201, response_model=UploadResponse)
 async def upload_document(
     background_tasks: BackgroundTasks,
@@ -244,7 +148,6 @@ async def upload_document(
     result = await db.documents.insert_one(
         {
             "userId": current_user.id,
-            "isDeleted": False,
             "uploadStatus": "processing",
             "edited": False,
             "hasLowConfidenceFields": False,
@@ -296,6 +199,25 @@ def _upload_range_start_utc(range_key: str, now: datetime) -> datetime:
     raise ValueError(f"Unknown range: {range_key}")  # unreachable - Query() pattern validates first
 
 
+def _build_list_query(
+    current_user: CurrentUser,
+    invoice_no: str | None,
+    consignee_code: str | None,
+    date: str | None,
+    date_range: str | None,
+) -> dict[str, Any]:
+    query: dict[str, Any] = {"userId": current_user.id}
+    if invoice_no:
+        query["invoiceNo"] = {"$regex": re.escape(invoice_no), "$options": "i"}
+    if consignee_code:
+        query["consigneeCode"] = {"$regex": re.escape(consignee_code), "$options": "i"}
+    if date:
+        query["challanDate"] = {"$regex": re.escape(date)}
+    if date_range:
+        query["createdAt"] = {"$gte": _upload_range_start_utc(date_range, datetime.now(UTC))}
+    return query
+
+
 @router.get("", response_model=DocumentListResponse)
 async def list_documents(
     current_user: CurrentUser = Depends(get_current_user),
@@ -307,20 +229,69 @@ async def list_documents(
     limit: int = Query(30, ge=1, le=100),
 ) -> DocumentListResponse:
     db = get_database()
-    query: dict[str, Any] = {"userId": current_user.id, "isDeleted": False}
-    if invoice_no:
-        query["invoiceNo"] = {"$regex": re.escape(invoice_no), "$options": "i"}
-    if consignee_code:
-        query["consigneeCode"] = {"$regex": re.escape(consignee_code), "$options": "i"}
-    if date:
-        query["challanDate"] = {"$regex": re.escape(date)}
-    if date_range:
-        query["createdAt"] = {"$gte": _upload_range_start_utc(date_range, datetime.now(UTC))}
+    query = _build_list_query(current_user, invoice_no, consignee_code, date, date_range)
 
     total = await db.documents.count_documents(query)
     cursor = db.documents.find(query).sort("createdAt", -1).skip((page - 1) * limit).limit(limit)
     items = [_serialize_document(doc) async for doc in cursor]
     return DocumentListResponse(items=items, total=total, page=page, limit=limit)
+
+
+@router.post("/download-all")
+async def download_all(
+    current_user: CurrentUser = Depends(get_current_user),
+    invoice_no: str | None = Query(None, alias="invoiceNo"),
+    consignee_code: str | None = Query(None, alias="consigneeCode"),
+    date: str | None = Query(None),
+    date_range: str | None = Query(None, alias="range", pattern="^(today|week|month|year)$"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(30, ge=1, le=100),
+) -> Response:
+    """Zips up the original Part1+Part2 files for exactly the current page of `list_documents`
+    (same filters, same skip/limit) - not the whole filtered set, not other pages. Any document
+    with a purged file, a missing GridFS id, or a download that raises is skipped entirely
+    (never a partial per-document zip entry) so one bad file can't 500 the whole export."""
+    db = get_database()
+    query = _build_list_query(current_user, invoice_no, consignee_code, date, date_range)
+    cursor = db.documents.find(query).sort("createdAt", -1).skip((page - 1) * limit).limit(limit)
+    docs = [doc async for doc in cursor]
+
+    included = 0
+    skipped = 0
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for doc in docs:
+            if doc.get("part1FilePurged") or doc.get("part2FilePurged"):
+                skipped += 1
+                continue
+            part1_file_id = doc.get("part1GridFsFileId")
+            part2_file_id = doc.get("part2GridFsFileId")
+            if not part1_file_id or not part2_file_id:
+                skipped += 1
+                continue
+            try:
+                part1_data = await download_buffer(part1_file_id)
+                part2_data = await download_buffer(part2_file_id)
+            except Exception:  # noqa: BLE001 - one unreadable file must not 500 the whole zip
+                skipped += 1
+                continue
+
+            folder = doc.get("invoiceNo") or str(doc["_id"])
+            part1_name = doc.get("part1OriginalFilename") or "part1"
+            part2_name = doc.get("part2OriginalFilename") or "part2"
+            zf.writestr(f"{folder}/part1_{part1_name}", part1_data)
+            zf.writestr(f"{folder}/part2_{part2_name}", part2_data)
+            included += 1
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="documents.zip"',
+            "X-Included-Count": str(included),
+            "X-Skipped-Count": str(skipped),
+        },
+    )
 
 
 def ist_today_utc_range(now_ist: datetime) -> tuple[datetime, datetime]:
@@ -333,7 +304,7 @@ def ist_today_utc_range(now_ist: datetime) -> tuple[datetime, datetime]:
 @router.get("/stats", response_model=StatsResponse)
 async def get_stats(current_user: CurrentUser = Depends(get_current_user)) -> StatsResponse:
     db = get_database()
-    base = {"userId": current_user.id, "isDeleted": False}
+    base = {"userId": current_user.id}
 
     today_start_utc, today_end_utc = ist_today_utc_range(datetime.now(IST))
 
@@ -445,18 +416,20 @@ async def correct_document(
 
 
 @router.delete("/{document_id}")
-async def soft_delete_document(
+async def delete_document(
     document_id: str, current_user: CurrentUser = Depends(get_current_user)
 ) -> dict[str, str]:
+    """Permanently deletes the document record and its original files. File deletion is
+    best-effort (tracked via app.core.orphaned_files on failure, see _best_effort_purge_files)
+    and never blocks the record removal - a GridFS outage must not leave a document the user
+    asked to delete still visible to them."""
     db = get_database()
     doc = await _get_owned_document(db, document_id, current_user.id)
-    now = datetime.now(UTC)
-    await db.documents.update_one(
-        {"_id": doc["_id"]}, {"$set": {"isDeleted": True, "deletedAt": now, "updatedAt": now}}
-    )
     await _best_effort_purge_files(doc)
+    await db.documents.delete_one({"_id": doc["_id"]})
+    await db.corrections.delete_many({"documentId": doc["_id"]})
     await log_action(current_user.id, "document_deleted", {"documentId": document_id})
-    return {"message": "Document deleted."}
+    return {"message": "Document permanently deleted."}
 
 
 @router.post("/{document_id}/purge-files")
@@ -469,11 +442,19 @@ async def purge_document_files(
     updates: dict[str, Any] = {}
 
     if doc.get("part1GridFsFileId") and not doc.get("part1FilePurged"):
-        await delete_file(doc["part1GridFsFileId"])
+        try:
+            await delete_file(doc["part1GridFsFileId"])
+        except Exception as exc:  # noqa: BLE001 - tracked, then re-raised unchanged
+            await record_orphan(doc["part1GridFsFileId"], doc["_id"], doc.get("userId"), exc)
+            raise
         updates["part1FilePurged"] = True
         updates["part1FilePurgedAt"] = now
     if doc.get("part2GridFsFileId") and not doc.get("part2FilePurged"):
-        await delete_file(doc["part2GridFsFileId"])
+        try:
+            await delete_file(doc["part2GridFsFileId"])
+        except Exception as exc:  # noqa: BLE001 - tracked, then re-raised unchanged
+            await record_orphan(doc["part2GridFsFileId"], doc["_id"], doc.get("userId"), exc)
+            raise
         updates["part2FilePurged"] = True
         updates["part2FilePurgedAt"] = now
 

@@ -32,7 +32,13 @@ export default function ConfirmModal({ open, title, message, severity = "normal"
       }}
       className={cn("backdrop:bg-black/60 bg-surface text-text rounded-lg p-0 w-[92vw] max-w-md ring-2", styles.ring)}
     >
-      <div className="p-5">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (phraseOk) onConfirm();
+        }}
+        className="p-5"
+      >
         <h2 className="text-lg font-semibold mb-2">{title}</h2>
         <p className="text-sm text-text-muted whitespace-pre-line">{message}</p>
 
@@ -51,18 +57,18 @@ export default function ConfirmModal({ open, title, message, severity = "normal"
         )}
 
         <div className="mt-5 flex justify-end gap-2">
-          <button onClick={onCancel} className="px-4 py-2 rounded text-sm border border-border hover:bg-surface-raised">
+          <button type="button" onClick={onCancel} className="px-4 py-2 rounded text-sm border border-border hover:bg-surface-raised">
             Cancel
           </button>
           <button
-            onClick={onConfirm}
+            type="submit"
             disabled={!phraseOk}
             className={cn("px-4 py-2 rounded text-sm font-medium disabled:opacity-40", styles.button)}
           >
             {confirmLabel}
           </button>
         </div>
-      </div>
+      </form>
     </dialog>
   );
 }

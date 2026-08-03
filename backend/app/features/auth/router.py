@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pymongo.errors import DuplicateKeyError
 
 from app.core.audit_log import log_action
@@ -17,6 +17,7 @@ from app.core.validators import (
 )
 from app.features.auth.dependencies import CurrentUser, get_current_user
 from app.features.auth.schemas import (
+    ActivityListResponse,
     AuthResponse,
     ChangePasswordRequest,
     ForgotPasswordResetRequest,
@@ -146,6 +147,28 @@ async def update_me(
         email=user["email"],
         role=user.get("role", "user"),
     )
+
+
+@router.get("/me/activity", response_model=ActivityListResponse)
+async def get_my_activity(
+    page: int = Query(1, ge=1),
+    limit: int = Query(40, ge=1, le=100),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> ActivityListResponse:
+    db = get_database()
+    query = {"userId": current_user.id}
+
+    total = await db.auditlogs.count_documents(query)
+    cursor = db.auditlogs.find(query).sort("createdAt", -1).skip((page - 1) * limit).limit(limit)
+    logs = await cursor.to_list(length=limit)
+
+    items = []
+    for log in logs:
+        entry = dict(log)
+        entry["id"] = str(entry.pop("_id"))
+        entry["userId"] = str(entry["userId"]) if entry.get("userId") else None
+        items.append(entry)
+    return ActivityListResponse(items=items, total=total, page=page, limit=limit)
 
 
 @router.post("/change-password", response_model=AuthResponse)

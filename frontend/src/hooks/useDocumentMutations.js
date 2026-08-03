@@ -41,14 +41,14 @@ export function useReprocessDocument(documentId) {
   });
 }
 
-export function useSoftDeleteDocument() {
+export function useDeleteDocument() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   return useMutation({
-    mutationFn: (id) => documentsApi.softDelete(id),
+    mutationFn: (id) => documentsApi.deleteDocument(id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["documents"] });
-      toast.success("Document deleted.");
+      toast.success("Document permanently deleted.");
       navigate("/documents");
     },
     onError: (error) => toast.error(error.userMessage || "Could not delete."),
@@ -61,20 +61,9 @@ export function usePurgeFiles(documentId) {
     mutationFn: () => documentsApi.purgeFiles(documentId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["document", documentId] });
-      toast.success("Original files purged. Extracted data was kept.");
+      toast.success("Original files deleted. Extracted data was kept.");
     },
-    onError: (error) => toast.error(error.userMessage || "Could not purge files."),
+    onError: (error) => toast.error(error.userMessage || "Could not delete files."),
   });
 }
 
-export function usePurgeAll() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (data) => documentsApi.purgeAll(data),
-    onSuccess: (data) => {
-      qc.invalidateQueries({ queryKey: ["documents"] });
-      toast.success(data.message || "All data deleted.");
-    },
-    onError: (error) => toast.error(error.userMessage || "Could not complete the wipe."),
-  });
-}

@@ -9,6 +9,7 @@ export const useAuthStore = create(
       email: null,
       role: null,
       setAuth: ({ token, username, email, role }) => set({ token, username, email, role }),
+      updateProfile: ({ username, email, role }) => set({ username, email, role }),
       logout: () => set({ token: null, username: null, email: null, role: null }),
     }),
     { name: "main-ocr-auth" }

@@ -1,5 +1,7 @@
 """Request/response schemas for auth routes."""
 
+from typing import Any
+
 from app.core.base_model import CamelModel
 
 
@@ -47,3 +49,10 @@ class ForgotPasswordResetRequest(CamelModel):
     username: str
     email: str
     new_password: str
+
+
+class ActivityListResponse(CamelModel):
+    items: list[dict[str, Any]]
+    total: int
+    page: int
+    limit: int
