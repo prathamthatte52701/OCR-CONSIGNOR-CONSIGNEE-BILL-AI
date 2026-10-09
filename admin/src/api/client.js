@@ -65,3 +65,18 @@ function extractUserMessage(error) {
   if (error.response.data?.error) return error.response.data.error;
   return "Something went wrong. Please try again.";
 }
+
+// With responseType "blob" even an error response body arrives as a Blob, so the usual
+// extractUserMessage() cannot read its JSON. Read the Blob text and pull the server's message out.
+export async function readErrorMessage(error, fallback) {
+  const data = error?.response?.data;
+  if (data instanceof Blob) {
+    try {
+      const detail = JSON.parse(await data.text())?.detail;
+      if (typeof detail === "string") return detail;
+    } catch {
+      /* not JSON - fall through */
+    }
+  }
+  return error?.userMessage || fallback;
+}

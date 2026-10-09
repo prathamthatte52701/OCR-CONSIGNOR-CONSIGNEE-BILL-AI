@@ -46,6 +46,7 @@ async def seed() -> None:
                 "email": email,
                 "passwordHash": hash_password(admin["password"]),
                 "role": "admin",
+                "status": "approved",
                 "tokenVersion": 0,
                 "createdAt": now,
                 "updatedAt": now,

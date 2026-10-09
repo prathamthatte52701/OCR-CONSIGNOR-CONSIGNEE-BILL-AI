@@ -4,14 +4,17 @@ Year+Month, double-password + rate-limited - see nuke_user/nuke_global). Role is
 re-verified server-side via require_admin's DB lookup - never trusted from a JWT claim."""
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from gridfs.errors import NoFile
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import DuplicateKeyError
 
 from app.core.audit_log import log_action
 from app.core.database import get_database
+from app.core.filenames import attachment_header
 from app.core.object_id import is_valid_object_id
 from app.core.orphaned_files import record_orphan
 from app.core.security import verify_password
@@ -21,10 +24,16 @@ from app.features.admin.schemas import (
     ListResponse,
     TelemetryResponse,
     UpdateUserRequest,
+    UserListResponse,
 )
-from app.features.auth.dependencies import CurrentUser, require_admin
+from app.features.auth.dependencies import (
+    STATUS_APPROVED,
+    STATUS_REJECTED,
+    CurrentUser,
+    require_admin,
+)
 from app.features.documents.correction_service import apply_field_correction
-from app.features.documents.gridfs_service import delete_file
+from app.features.documents.gridfs_service import delete_file, download_buffer
 from app.features.documents.schemas import CorrectRequest
 
 router = APIRouter()
@@ -32,6 +41,9 @@ router = APIRouter()
 NUKE_ATTEMPT_ACTION = "admin_nuke_attempt"
 NUKE_RATE_LIMIT_WINDOW_HOURS = 24
 NUKE_RATE_LIMIT_MAX_ATTEMPTS = 5
+ADMIN_VIEWED_DOCUMENT = "admin_viewed_document"
+ADMIN_DOWNLOADED_PART1 = "admin_downloaded_part1"
+ADMIN_DOWNLOADED_PART2 = "admin_downloaded_part2"
 CONFIRMATION_PHRASE_USER_NUKE = "NUKE USER"
 CONFIRMATION_PHRASE_GLOBAL_NUKE = "NUKE ALL"
 
@@ -42,9 +54,18 @@ def _serialize_user(user: dict[str, Any]) -> dict[str, Any]:
         "username": user["username"],
         "email": user["email"],
         "role": user.get("role", "user"),
+        "status": user.get("status", STATUS_APPROVED),
         "createdAt": user.get("createdAt"),
         "updatedAt": user.get("updatedAt"),
     }
+
+
+def _status_query(status: str) -> dict[str, Any]:
+    # A user document with no status field is a pre-approval-era account and counts as
+    # approved everywhere.
+    if status == STATUS_APPROVED:
+        return {"$or": [{"status": STATUS_APPROVED}, {"status": {"$exists": False}}]}
+    return {"status": status}
 
 
 def _serialize_document(doc: dict[str, Any], owner: dict[str, Any] | None) -> dict[str, Any]:
@@ -149,17 +170,76 @@ async def ping(current_user: CurrentUser = Depends(require_admin)) -> dict[str, 
     return {"message": "pong", "admin": current_user.username}
 
 
-@router.get("/users", response_model=ListResponse)
+@router.get("/users", response_model=UserListResponse)
 async def list_users(
     page: int = Query(1, ge=1),
     limit: int = Query(30, ge=1, le=100),
+    status: Literal["pending", "approved", "rejected"] | None = Query(default=None),
     current_user: CurrentUser = Depends(require_admin),
-) -> ListResponse:
+) -> UserListResponse:
     db = get_database()
-    total = await db.users.count_documents({})
-    cursor = db.users.find({}).sort("createdAt", -1).skip((page - 1) * limit).limit(limit)
+    query = _status_query(status) if status else {}
+    total = await db.users.count_documents(query)
+    cursor = (
+        db.users.find(query, {"passwordHash": 0})
+        .sort("createdAt", -1)
+        .skip((page - 1) * limit)
+        .limit(limit)
+    )
     items = [_serialize_user(user) async for user in cursor]
-    return ListResponse(items=items, total=total, page=page, limit=limit)
+    pending_count = await db.users.count_documents(_status_query("pending"))
+    return UserListResponse(
+        items=items, total=total, page=page, limit=limit, pending_count=pending_count
+    )
+
+
+async def _set_user_status(user_id: str, new_status: str, admin: CurrentUser) -> dict[str, Any]:
+    if not is_valid_object_id(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user id.")
+    db = get_database()
+    target_id = ObjectId(user_id)
+    user = await db.users.find_one({"_id": target_id})
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    update: dict[str, Any] = {"$set": {"status": new_status, "updatedAt": datetime.now(UTC)}}
+    if new_status == STATUS_REJECTED:
+        # Admins (including yourself) can never be locked out this way.
+        if user.get("role") == "admin":
+            raise HTTPException(status_code=400, detail="Admin accounts cannot be rejected.")
+        if target_id == admin.id:
+            raise HTTPException(status_code=400, detail="You cannot reject your own account.")
+        # Bumping tokenVersion kills every token already issued to this user.
+        update["$inc"] = {"tokenVersion": 1}
+    await db.users.update_one({"_id": target_id}, update)
+    await log_action(
+        admin.id,
+        "user_approved" if new_status == STATUS_APPROVED else "user_rejected",
+        {
+            "targetUserId": user_id,
+            "targetEmail": user["email"],
+            "previous": user.get("status", STATUS_APPROVED),
+        },
+    )
+    refreshed = await db.users.find_one({"_id": target_id})
+    assert refreshed is not None
+    return _serialize_user(refreshed)
+
+
+@router.post("/users/{user_id}/approve")
+async def approve_user(
+    user_id: str, current_user: CurrentUser = Depends(require_admin)
+) -> dict[str, Any]:
+    return await _set_user_status(user_id, STATUS_APPROVED, current_user)
+
+
+@router.post("/users/{user_id}/reject")
+async def reject_user(
+    user_id: str, current_user: CurrentUser = Depends(require_admin)
+) -> dict[str, Any]:
+    """Reject a pending request OR revoke an approved user - same action: the account is
+    locked out and every issued token dies (tokenVersion bump)."""
+    return await _set_user_status(user_id, STATUS_REJECTED, current_user)
 
 
 @router.get("/users/{user_id}")
@@ -187,6 +267,8 @@ async def update_user(
         raise HTTPException(status_code=404, detail="User not found.")
 
     updates: dict[str, Any] = {}
+    audit: dict[str, Any] = {"userId": user_id}
+    email_changed = False
     if body.username is not None:
         if not is_valid_username(body.username):
             raise HTTPException(
@@ -197,7 +279,15 @@ async def update_user(
         normalized_email = normalize_email(body.email)
         if not is_valid_email(normalized_email):
             raise HTTPException(status_code=400, detail="Invalid email address.")
-        updates["email"] = normalized_email
+        if normalized_email != user["email"]:
+            taken = await db.users.find_one(
+                {"email": normalized_email, "_id": {"$ne": user["_id"]}}
+            )
+            if taken is not None:
+                raise HTTPException(status_code=400, detail="That email is already in use.")
+            updates["email"] = normalized_email
+            audit.update({"previousEmail": user["email"], "newEmail": normalized_email})
+            email_changed = True
     if body.role is not None:
         if body.role not in ("user", "admin"):
             raise HTTPException(status_code=400, detail="Role must be 'user' or 'admin'.")
@@ -205,10 +295,17 @@ async def update_user(
 
     if updates:
         updates["updatedAt"] = datetime.now(UTC)
-        await db.users.update_one({"_id": user["_id"]}, {"$set": updates})
-        await log_action(
-            current_user.id, "user_updated", {"userId": user_id, "fields": list(updates)}
-        )
+        update: dict[str, Any] = {"$set": updates}
+        if email_changed:
+            # The email is the login identity: bumping tokenVersion logs the user out
+            # everywhere, so no session keeps running under the old address.
+            update["$inc"] = {"tokenVersion": 1}
+        try:
+            await db.users.update_one({"_id": user["_id"]}, update)
+        except DuplicateKeyError:  # lost a race against another signup / edit
+            raise HTTPException(status_code=400, detail="That email is already in use.") from None
+        audit["fields"] = [k for k in updates if k != "updatedAt"]
+        await log_action(current_user.id, "user_updated", audit)
 
     updated = await db.users.find_one({"_id": user["_id"]})
     assert updated is not None
@@ -383,14 +480,66 @@ async def _get_any_document(document_id: str) -> dict[str, Any]:
     return doc
 
 
+async def _log_admin_access(admin: CurrentUser, doc: dict[str, Any], action: str) -> None:
+    """Audit trail for an admin OPENING someone else's document (detail view or a file).
+    Written BEFORE any data is returned, so a failed audit write fails the request instead of
+    letting the access go unrecorded. Looking at your own document is not logged."""
+    if doc["userId"] == admin.id:
+        return
+    await log_action(
+        admin.id,
+        action,
+        {"targetUserId": str(doc["userId"]), "documentId": str(doc["_id"])},
+    )
+
+
 @router.get("/documents/{document_id}")
 async def admin_get_document(
     document_id: str, current_user: CurrentUser = Depends(require_admin)
 ) -> dict[str, Any]:
     db = get_database()
     doc = await _get_any_document(document_id)
+    await _log_admin_access(current_user, doc, ADMIN_VIEWED_DOCUMENT)
     owner = await db.users.find_one({"_id": doc["userId"]})
     return _serialize_document(doc, owner)
+
+
+async def _admin_file_response(
+    admin: CurrentUser, document_id: str, part: Literal["part1", "part2"]
+) -> Response:
+    doc = await _get_any_document(document_id)
+    label = "Part 1" if part == "part1" else "Part 2"
+    file_id = doc.get(f"{part}GridFsFileId")
+    if doc.get(f"{part}FilePurged"):
+        raise HTTPException(status_code=400, detail=f"{label} file has been purged.")
+    if not file_id:
+        raise HTTPException(status_code=404, detail=f"{label} file not found.")
+    try:
+        data = await download_buffer(file_id)
+    except NoFile:
+        raise HTTPException(status_code=404, detail=f"{label} file not found.") from None
+    await _log_admin_access(
+        admin, doc, ADMIN_DOWNLOADED_PART1 if part == "part1" else ADMIN_DOWNLOADED_PART2
+    )
+    return Response(
+        content=data,
+        media_type=doc.get(f"{part}MimeType") or "application/octet-stream",
+        headers=attachment_header(doc.get(f"{part}OriginalFilename"), part),
+    )
+
+
+@router.get("/documents/{document_id}/download/part1")
+async def admin_download_part1(
+    document_id: str, current_user: CurrentUser = Depends(require_admin)
+) -> Response:
+    return await _admin_file_response(current_user, document_id, "part1")
+
+
+@router.get("/documents/{document_id}/download/part2")
+async def admin_download_part2(
+    document_id: str, current_user: CurrentUser = Depends(require_admin)
+) -> Response:
+    return await _admin_file_response(current_user, document_id, "part2")
 
 
 @router.patch("/documents/{document_id}")

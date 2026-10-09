@@ -63,3 +63,27 @@ def test_min_confidence_empty_dict_returns_none() -> None:
 
 def test_min_confidence_no_confidence_keys_returns_none() -> None:
     assert _min_confidence({"invoiceNo": "123", "consignee": "ACME"}) is None
+
+
+def test_format_net_moves_values_to_the_field_their_shape_belongs_to() -> None:
+    from app.features.documents.processing import _apply_format_reassignment_safety_net as net
+
+    out = net(
+        {
+            "consignorPoNo": "0000166771",
+            "requestNo": "AABCE9378F",
+            "consignorPan": "23AABCE9378F3ZI",
+            "consignorGstin": "3242064440",
+        }
+    )
+    assert out["consignorPoNo"] == "3242064440"
+    assert out["requestNo"] == "0000166771"
+    assert out["consignorPan"] == "AABCE9378F"
+    assert out["consignorGstin"] is None or out["consignorGstin"] != "3242064440"
+
+
+def test_format_net_leaves_correct_and_missing_values_alone() -> None:
+    from app.features.documents.processing import _apply_format_reassignment_safety_net as net
+
+    good = {"consignorPoNo": "3242064440", "requestNo": "0000166771", "consignorPan": "AABCE9378F", "consignorGstin": None}
+    assert net(good) == good

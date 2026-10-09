@@ -18,6 +18,10 @@ export default function AdminUserDetailPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [nukeOpen, setNukeOpen] = useState(false);
   const [nukeBusy, setNukeBusy] = useState(false);
+  const [emailEditing, setEmailEditing] = useState(false);
+  const [newEmail, setNewEmail] = useState("");
+  const [emailConfirmOpen, setEmailConfirmOpen] = useState(false);
+  const [emailBusy, setEmailBusy] = useState(false);
 
   const load = () => {
     adminApi.user(id).then(setUser).catch((err) => toast.error(err.userMessage));
@@ -34,6 +38,36 @@ export default function AdminUserDetailPage() {
       toast.success(`Role changed to ${newRole}.`);
     } catch (err) {
       toast.error(err.userMessage || "Could not update role.");
+    }
+  };
+
+  const startEmailEdit = () => {
+    setNewEmail(user.email);
+    setEmailEditing(true);
+  };
+
+  const submitEmailForm = (e) => {
+    e.preventDefault();
+    const next = newEmail.trim().toLowerCase();
+    if (next === user.email) {
+      setEmailEditing(false); // nothing to change
+      return;
+    }
+    setEmailConfirmOpen(true);
+  };
+
+  const handleEmailChange = async () => {
+    setEmailConfirmOpen(false);
+    setEmailBusy(true);
+    try {
+      const updated = await adminApi.updateUser(id, { email: newEmail.trim() });
+      setUser(updated);
+      setEmailEditing(false);
+      toast.success("Email changed. The user was logged out everywhere.");
+    } catch (err) {
+      toast.error(err.userMessage || "Could not change the email.");
+    } finally {
+      setEmailBusy(false);
     }
   };
 
@@ -76,6 +110,41 @@ export default function AdminUserDetailPage() {
             <h1 className="text-lg font-semibold">{user.username}</h1>
             <p className="text-sm text-text-muted">{user.email}</p>
             <p className="text-xs text-text-muted mt-1">Joined {formatIST(user.createdAt)}</p>
+            {emailEditing ? (
+              <form onSubmit={submitEmailForm} className="mt-3 flex items-center gap-2">
+                <input
+                  type="email"
+                  required
+                  autoFocus
+                  aria-label="New email"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  className="rounded border border-border bg-bg px-2 py-1 text-sm w-64"
+                />
+                <button
+                  type="submit"
+                  disabled={emailBusy}
+                  className="text-xs px-3 py-1.5 rounded bg-accent text-bg font-medium disabled:opacity-50"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEmailEditing(false)}
+                  className="text-xs px-3 py-1.5 rounded border border-border hover:bg-surface-raised"
+                >
+                  Cancel
+                </button>
+              </form>
+            ) : (
+              <button
+                type="button"
+                onClick={startEmailEdit}
+                className="mt-2 text-xs text-accent hover:underline"
+              >
+                Change email
+              </button>
+            )}
           </div>
           <div className="flex flex-col items-end gap-2">
             <span className="text-xs px-2 py-0.5 rounded-full bg-accent/15 text-accent">{user.role}</span>
@@ -128,6 +197,16 @@ export default function AdminUserDetailPage() {
         confirmLabel="Delete user"
         onConfirm={handleDelete}
         onCancel={() => setConfirmOpen(false)}
+      />
+
+      <ConfirmModal
+        open={emailConfirmOpen}
+        title="Change this user's email?"
+        message={`${user.username} will be logged out everywhere and must log in with ${newEmail.trim().toLowerCase()} from now on. This is recorded in the audit log.`}
+        severity="critical"
+        confirmLabel="Change email"
+        onConfirm={handleEmailChange}
+        onCancel={() => setEmailConfirmOpen(false)}
       />
 
       <NukeDialog

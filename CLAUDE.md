@@ -4,16 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-"THE MAIN OCR" — Consignor/Consignee OCR system. FastAPI + Motor (async MongoDB) backend that OCRs uploaded documents (PaddleOCR/PP-StructureV3) and extracts structured fields via Groq LLM. Two separate React/Vite frontends: `frontend/` (end-user app) and `admin/` (admin console). Not a git repo at present.
+"THE MAIN OCR" — Consignor/Consignee OCR system. FastAPI + Motor (async MongoDB) backend that OCRs uploaded documents (PaddleOCR/PP-StructureV3) and extracts structured fields via Groq LLM. Two separate React/Vite frontends: `frontend/` (end-user app) and `admin/` (admin console). Git remote `origin` = the OCR-CONSIGNOR-CONSIGNEE-BILL-AI repo. Never commit or push unless asked in that turn.
 
 ## Commands
 
 Backend (from `backend/`, using the repo-root `venv`):
 - Run server: `uvicorn app.main:app --reload`
-- Run all tests: `pytest` (testpaths = `app`, tests live as `test_*.py` siblings next to the code they cover, not in a separate `tests/` dir)
+- Install: `pip install -r requirements-dev.txt` (runtime pins live in the repo-root `requirements.txt`; lint/type/test tools in `requirements-dev.txt`)
+- Run all tests: `pytest` (testpaths = `app`, tests live as `test_*.py` siblings next to the code they cover, not in a separate `tests/` dir). **Tests never touch the real database**: `backend/conftest.py` forces `MONGO_DB_NAME=docintel_cons_cons_test`, aborts the run if the name does not end in `_test`, swaps `MONGO_URI` for a dummy host and installs an in-process fake Mongo (`backend/fake_mongo.py`). To run the same suite against a real server set `TEST_MONGO_URI` (a `*_test` database only; it is emptied per test and dropped at the end). `backend/testkit.py` has `make_user` / `make_document` / `current_db` for new tests. Startup recovery and `/docs` are forced OFF in tests unless a test turns them on.
+- Admin/user migrations: `python -m app.scripts.migrate_user_status [--dry-run]` (stamps `status: approved` on pre-approval users; idempotent). `python -m app.scripts.seed_admin` creates the admins named in `ADMIN_1_*` / `ADMIN_2_*` env vars (nothing is hardcoded).
 - Run a single test: `pytest app/features/ocr/test_extraction.py::test_name`
 - Lint/format: `ruff check .`, `black .`, `isort .` (configured in `backend/pyproject.toml`, line-length 100, py312)
 - Type check: `mypy .` (`disallow_untyped_defs = true`)
+
+Browser checks (from `frontend/`, Playwright resolved from `PLAYWRIGHT_PATH`/npx cache, backend fully mocked with `page.route`, no real data): `node e2e/test_login_approval.cjs`, `test_admin_users.cjs`, `test_email_admin_only.cjs`, `test_download_auth.cjs`, `test_shortcuts.cjs` (each prints `SUMMARY: n/m passed`).
 
 Frontend / admin (from `frontend/` or `admin/`, each is an independent Vite app with its own `package.json`):
 - Dev server: `npm run dev`
@@ -53,10 +57,18 @@ Documents have two parts with genuinely different processing paths, orchestrated
 Separately, `purge_range`/`purge_all` (documents) and `delete_user` (admin) build their own independent unpaginated Mongo queries (`.to_list(length=None)`) against the same `documents` collection for bulk-delete purposes — they don't share query-building code with `list_documents`, so changes to one don't affect the other, but keep it that way.
 
 ### Security patterns (already established — follow, don't reinvent)
-- Every user-facing document query is scoped with `{"userId": current_user.id, "isDeleted": False}`.
+- Every user-facing document query is scoped with `{"userId": current_user.id, "isDeleted": {"$ne": True}}`. Soft-delete no longer exists (delete is permanent: record + GridFS files + corrections); the `isDeleted` filter only guards leftover legacy rows.
 - Ownership checks return **400** for a malformed id and **404** (never 403) for a valid id that doesn't belong to the current user or is soft-deleted — see `_get_owned_document` in `documents/router.py`. This intentionally avoids leaking whether another user's document exists.
-- Session revocation is DB-checked, not JWT-trusted: `auth/dependencies.py:get_current_user` re-reads the user's `tokenVersion` from Mongo on every request and rejects the token if it doesn't match the value baked into the JWT at sign time — this is how forced logout / password-change invalidation works.
-- `slowapi` rate limiting (`app/core/rate_limit.py`, per-IP `Limiter`) is currently applied only to `auth` routes (signup/login/etc.), not to `documents`/`admin` routes.
+- Session revocation is DB-checked, not JWT-trusted: `auth/dependencies.py:get_current_user` re-reads the user from Mongo on every request, enforces the approval gate (`status` must be `approved`; a missing field = legacy account = approved; anything else fails closed with 403 and the exact "Waiting for admin approval." / "Your request was not approved. Contact the admin." messages) and then rejects the token if its `tokenVersion` doesn't match the one baked in at sign time — this is how forced logout / password-change / admin reject / admin email change invalidation works. Tokens are PyJWT, HS256 only (algorithms pinned, `exp` required, 7-day TTL).
+- Account approval: signup creates `status: "pending"` (no auto-login); admins approve / reject / revoke / re-approve in the admin panel (`POST /api/admin/users/{id}/approve|reject`; reject bumps `tokenVersion`; admins and the acting admin can never be rejected). Login checks the password FIRST (one bcrypt check on every path incl. a dummy hash for unknown emails), only then reveals pending/rejected.
+- Email is admin-only: `PATCH /api/auth/me` returns 403 for a changed email; `PATCH /api/admin/users/{id}` can change it (validated, unique, bumps `tokenVersion`, audited with previous/new).
+- Admin access audit: every admin route that opens another user's document (detail, `download/part1|part2`) writes an `admin_viewed_document` / `admin_downloaded_part1|2` entry (`userId` = admin, `context.targetUserId`, `context.documentId`) BEFORE returning data; if the audit write fails the request fails. Admin list views and the admin opening their own document are not logged.
+- Passwords (new ones only: signup, change, forgot-password reset): 8-64 BYTES, upper+lower+digit+special, no whitespace/control chars, not in `core/common_passwords.py` (lowercased, trailing digits/symbols stripped), and must not contain the username or the email local part (parts under 3 chars ignored). Login never applies these rules.
+- Size / input limits: auth bodies are capped at 16 KB and every auth field has a max length (`auth/schemas.py`); `/api/documents/upload` is refused by declared Content-Length above 2x5 MB + 1 MB, cut off while streaming, and each file is capped at 5 MB while read (`core/upload_limit.py`, `documents/router.py:_read_capped`). Uploaded filenames and OCR'd invoice numbers are sanitised before use in `Content-Disposition` or zip entry names (`core/filenames.py`). 422 responses carry only `loc/msg/type` (never the rejected input).
+- Restart recovery: `documents/recovery.py` re-queues documents stuck in `processing` after a restart (background task, one at a time, `recoveryAttempts` counted BEFORE processing, failed after 2). Disable with `RECOVER_INTERRUPTED_UPLOADS=false`.
+- `/docs`, `/redoc`, `/openapi.json` are off unless `ENABLE_DOCS=true`.
+- `slowapi` rate limiting (`app/core/rate_limit.py`, per-IP `Limiter`) is currently applied only to `auth` routes (signup/login/etc.), not to `documents`/`admin` routes. Login additionally has a per-EMAIL limiter (20 attempts / 15 minutes, in-memory moving window).
+- Known, accepted: forgot-password works for admins too; sessions last 7 days; there is no OCR queue cap.
 
 ### Frontend
 - `frontend/src/pages/DocumentsPage.jsx` — the URL query string (`useSearchParams`) is the source of truth for filters/pagination, mirrored into local `useState`; server data comes through React Query (`hooks/useDocumentsQueries.js` → `api/documents.js`).

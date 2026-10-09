@@ -1,4 +1,5 @@
 import { useParams, useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import { RefreshCw, Trash2, FileX2, Download, AlertTriangle, Layers } from "lucide-react";
 import { useDocument } from "../hooks/useDocumentsQueries";
 import {
@@ -9,6 +10,7 @@ import {
 } from "../hooks/useDocumentMutations";
 import { useDialogStore } from "../store/dialogStore";
 import { documentsApi } from "../api/documents";
+import { readErrorMessage } from "../api/client";
 import LoadingState from "../components/LoadingState";
 import EditableField from "../components/EditableField";
 import { formatIST } from "../lib/formatDate";
@@ -99,6 +101,20 @@ export default function DocumentDetailPage() {
   const saveLineItem = (index, subfield, value) =>
     correctField.mutateAsync({ field: `lineItems.${index}.${subfield}`, value });
 
+  const handleDownload = async (part) => {
+    try {
+      const { blob, filename } = await documentsApi.downloadFile(id, part);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(await readErrorMessage(err, "Could not download the file."));
+    }
+  };
+
   const handleReprocess = async () => {
     const ok = await confirm({
       title: "Reprocess this document?",
@@ -152,21 +168,17 @@ export default function DocumentDetailPage() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {!doc.part1FilePurged && (
-            <a
-              href={documentsApi.downloadUrl(id, "part1")}
-              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-border hover:bg-surface-raised"
-            >
-              <Download size={13} /> Part 1
-            </a>
-          )}
-          {!doc.part2FilePurged && (
-            <a
-              href={documentsApi.downloadUrl(id, "part2")}
-              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-border hover:bg-surface-raised"
-            >
-              <Download size={13} /> Part 2
-            </a>
+          {["part1", "part2"].map(
+            (part) =>
+              !doc[`${part}FilePurged`] && (
+                <button
+                  key={part}
+                  onClick={() => handleDownload(part)}
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-border hover:bg-surface-raised"
+                >
+                  <Download size={13} /> {part === "part1" ? "Part 1" : "Part 2"}
+                </button>
+              )
           )}
           <button
             onClick={handleReprocess}

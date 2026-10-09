@@ -3,6 +3,8 @@ import AdminLayout from "./components/AdminLayout";
 import RequireAdminAuth from "./components/RequireAdminAuth";
 import ServerDownBanner from "./components/ServerDownBanner";
 import AdminLoginPage from "./pages/AdminLoginPage";
+import AdminForgotPasswordPage from "./pages/AdminForgotPasswordPage";
+import AdminProfilePage from "./pages/AdminProfilePage";
 import AdminDashboardPage from "./pages/AdminDashboardPage";
 import AdminUsersPage from "./pages/AdminUsersPage";
 import AdminUserDetailPage from "./pages/AdminUserDetailPage";
@@ -17,6 +19,7 @@ export default function App() {
       <ServerDownBanner />
       <Routes>
         <Route path="/login" element={<AdminLoginPage />} />
+        <Route path="/forgot-password" element={<AdminForgotPasswordPage />} />
 
         <Route element={<RequireAdminAuth />}>
           <Route element={<AdminLayout />}>
@@ -27,6 +30,7 @@ export default function App() {
             <Route path="/documents/:id" element={<AdminDocumentDetailPage />} />
             <Route path="/logs" element={<AdminLogsPage />} />
             <Route path="/orphaned-files" element={<AdminOrphanedFilesPage />} />
+            <Route path="/profile" element={<AdminProfilePage />} />
           </Route>
         </Route>
 

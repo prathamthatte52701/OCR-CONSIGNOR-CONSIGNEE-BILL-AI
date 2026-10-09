@@ -1,9 +1,32 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useLogin } from "../hooks/useAuth";
 import PasswordInput from "../components/PasswordInput";
 
+// Fixed texts only - the notice comes from a URL key, never from free text in the URL.
+const NOTICES = {
+  signup: { tone: "info", text: "Account created. Waiting for admin approval." },
+  pending: { tone: "warn", text: "Waiting for admin approval." },
+  rejected: { tone: "danger", text: "Your request was not approved. Contact the admin." },
+};
+
+const TONE_CLASSES = {
+  info: "border-accent/40 bg-accent/10 text-accent",
+  warn: "border-warning/40 bg-warning/10 text-warning",
+  danger: "border-danger/40 bg-danger/10 text-danger",
+};
+
+function loginNotice(login, searchParams) {
+  if (login.error?.response?.status === 403) {
+    const detail = login.error.response.data?.detail;
+    if (detail === NOTICES.pending.text) return NOTICES.pending;
+    if (detail === NOTICES.rejected.text) return NOTICES.rejected;
+  }
+  return NOTICES[searchParams.get("notice")] ?? null;
+}
+
 export default function LoginPage() {
+  const [searchParams] = useSearchParams();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const login = useLogin();
@@ -12,6 +35,8 @@ export default function LoginPage() {
     e.preventDefault();
     login.mutate({ email, password });
   };
+
+  const notice = loginNotice(login, searchParams);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-bg px-4">
@@ -23,6 +48,12 @@ export default function LoginPage() {
 
         <form onSubmit={handleSubmit} className="bg-surface border border-border rounded-lg p-6 space-y-4">
           <h1 className="text-lg font-semibold">Log in</h1>
+
+          {notice && (
+            <p role="alert" className={`rounded border px-3 py-2 text-sm ${TONE_CLASSES[notice.tone]}`}>
+              {notice.text}
+            </p>
+          )}
 
           <div>
             <label className="text-xs text-text-muted block mb-1">Email</label>

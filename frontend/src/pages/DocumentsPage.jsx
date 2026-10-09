@@ -115,15 +115,23 @@ export default function DocumentsPage() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-semibold">Documents</h1>
-        <button
-          type="button"
-          onClick={handleDownloadAll}
-          disabled={downloadingAll || !query.data?.items.length}
-          className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-sm font-medium hover:border-accent/50 disabled:opacity-30"
-        >
-          <Download size={14} />
-          {downloadingAll ? "Zipping..." : "Download All"}
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/documents/view-all"
+            className="rounded border border-border px-3 py-1.5 text-sm font-medium hover:border-accent/50"
+          >
+            View All Details
+          </Link>
+          <button
+            type="button"
+            onClick={handleDownloadAll}
+            disabled={downloadingAll || !query.data?.items.length}
+            className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-sm font-medium hover:border-accent/50 disabled:opacity-30"
+          >
+            <Download size={14} />
+            {downloadingAll ? "Zipping..." : "Download All"}
+          </button>
+        </div>
       </div>
 
       <form onSubmit={runSearch} className="flex flex-wrap gap-2 mb-6 bg-surface border border-border rounded-lg p-3">

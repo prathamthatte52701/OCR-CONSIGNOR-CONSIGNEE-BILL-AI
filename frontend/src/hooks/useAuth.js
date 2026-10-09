@@ -15,7 +15,11 @@ export function useLogin() {
       const params = new URLSearchParams(window.location.search);
       navigate(params.get("next") || "/dashboard");
     },
-    onError: (error) => toast.error(error.userMessage || "Login failed."),
+    // A 403 means pending/rejected approval - the login page shows that inline and persistently,
+    // so don't also flash it as a toast. Everything else is a normal transient error.
+    onError: (error) => {
+      if (error.response?.status !== 403) toast.error(error.userMessage || "Login failed.");
+    },
   });
 }
 
@@ -24,8 +28,8 @@ export function useSignup() {
   return useMutation({
     mutationFn: authApi.signup,
     onSuccess: () => {
-      toast.success("Account created. Please log in.");
-      navigate("/login");
+      toast.success("Account created. Waiting for admin approval.");
+      navigate("/login?notice=signup");
     },
     onError: (error) => toast.error(error.userMessage || "Signup failed."),
   });

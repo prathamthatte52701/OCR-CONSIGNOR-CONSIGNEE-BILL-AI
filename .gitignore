@@ -10,3 +10,7 @@ build/
 .pytest_cache/
 .claude/
 *.log
+
+# local test report (not for the repo)
+FULL_TEST_REPORT.md
+PART1_TEST_REPORT.md

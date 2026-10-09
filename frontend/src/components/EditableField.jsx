@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Sparkles, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/utils";
 
@@ -11,14 +11,19 @@ function confidenceTone(confidence) {
 export default function EditableField({ label, value, confidence, autoCorrected, disabled, onSave }) {
   const [draft, setDraft] = useState(value ?? "");
   const [saving, setSaving] = useState(false);
+  // A ref, not just state: two Enters (or Enter + click) in the same tick both see the stale
+  // `saving === false` from the render closure and would each send a request.
+  const savingRef = useRef(false);
   const dirty = draft !== (value ?? "");
 
   const handleSave = async () => {
-    if (!dirty || saving) return;
+    if (!dirty || savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     try {
       await onSave(draft === "" ? null : draft);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -50,7 +55,10 @@ export default function EditableField({ label, value, confidence, autoCorrected,
           value={draft}
           disabled={disabled}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSave()}
+          onKeyDown={(e) => {
+            // not while an IME is composing text, and not for an auto-repeating held key
+            if (e.key === "Enter" && !e.nativeEvent.isComposing && !e.repeat) handleSave();
+          }}
           placeholder="Not extracted"
           className={cn(
             "w-full rounded border bg-bg px-2.5 py-1.5 text-sm disabled:opacity-50",

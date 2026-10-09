@@ -11,6 +11,19 @@ from app.core.security import decode_token
 
 _bearer = HTTPBearer(auto_error=False)
 
+STATUS_PENDING = "pending"
+STATUS_APPROVED = "approved"
+STATUS_REJECTED = "rejected"
+PENDING_MESSAGE = "Waiting for admin approval."
+REJECTED_MESSAGE = "Your request was not approved. Contact the admin."
+
+
+def raise_if_not_approved(user_status: str) -> None:
+    if user_status == STATUS_PENDING:
+        raise HTTPException(status_code=403, detail=PENDING_MESSAGE)
+    if user_status != STATUS_APPROVED:
+        raise HTTPException(status_code=403, detail=REJECTED_MESSAGE)
+
 
 @dataclass
 class CurrentUser:
@@ -39,6 +52,14 @@ async def get_current_user(
     user = await db.users.find_one({"_id": ObjectId(user_id)})
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
+
+    # Single enforcement point for the admin-approval gate: every protected route depends
+    # on this function, so a pending/rejected account is locked out everywhere, even with
+    # an old token. A missing status field is a pre-approval-era account and stays approved.
+    # Checked BEFORE the tokenVersion comparison so a rejected user's old (revoked) token still
+    # gets the clear 403 "not approved" message instead of a generic 401. This leaks nothing:
+    # the token's signature was already verified above, so only the account's own holder gets here.
+    raise_if_not_approved(user.get("status", STATUS_APPROVED))
 
     if user.get("tokenVersion", 0) != payload.get("tokenVersion"):
         raise HTTPException(status_code=401, detail="Session expired, please log in again")

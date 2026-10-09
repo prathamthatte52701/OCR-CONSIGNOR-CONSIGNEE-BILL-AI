@@ -10,7 +10,15 @@ from app.features.ocr.providers.base import AIProvider
 
 RETRYABLE_STATUS_CODES = {401, 403, 429, 500, 502, 503, 504}
 REQUEST_TIMEOUT_SECONDS = 60
-MODEL_NAME = "llama-3.3-70b-versatile"
+MAX_COMPLETION_TOKENS = 2048  # reasoning models spend part of this budget before the JSON
+
+
+def _model_options(model: str) -> dict[str, str]:
+    """Per-model request options. The gpt-oss models are reasoning models: low effort keeps the
+    answer fast and leaves the token budget for the JSON itself."""
+    if model.startswith("openai/gpt-oss"):
+        return {"reasoning_effort": "low"}
+    return {}
 
 
 class GroqProvider(AIProvider):
@@ -28,9 +36,10 @@ class GroqProvider(AIProvider):
             try:
                 response = await asyncio.wait_for(
                     client.chat.completions.create(
-                        model=MODEL_NAME,
+                        model=settings.groq_model,
                         temperature=0.1,
-                        max_tokens=1024,
+                        max_completion_tokens=MAX_COMPLETION_TOKENS,
+                        **_model_options(settings.groq_model),
                         messages=[
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": user_prompt},

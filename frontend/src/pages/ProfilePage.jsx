@@ -33,6 +33,9 @@ export default function ProfilePage() {
         <p className="text-sm text-text-muted mt-1">
           {username} &middot; {email} &middot; {role}
         </p>
+        <p className="text-xs text-text-muted mt-1">
+          Your email is read-only. Only an admin can change it - contact the admin if it needs updating.
+        </p>
       </div>
 
       <form onSubmit={handleChangePassword} className="bg-surface border border-border rounded-lg p-5 space-y-4">

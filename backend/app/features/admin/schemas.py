@@ -2,13 +2,15 @@
 
 from typing import Any
 
+from pydantic import Field
+
 from app.core.base_model import CamelModel
 
 
 class UpdateUserRequest(CamelModel):
-    username: str | None = None
-    email: str | None = None
-    role: str | None = None
+    username: str | None = Field(default=None, max_length=32)
+    email: str | None = Field(default=None, max_length=254)
+    role: str | None = Field(default=None, max_length=16)
 
 
 class AdminNukeRequest(CamelModel):
@@ -16,9 +18,9 @@ class AdminNukeRequest(CamelModel):
     older_than_months or year must be set; month is optional and only valid alongside year
     (Year+Month mode) - see _build_range_filter for the exact validation."""
 
-    password: str
-    confirm_password: str
-    confirmation_phrase: str
+    password: str = Field(max_length=128)
+    confirm_password: str = Field(max_length=128)
+    confirmation_phrase: str = Field(max_length=64)
     older_than_months: int | None = None
     year: int | None = None
     month: int | None = None
@@ -29,6 +31,11 @@ class ListResponse(CamelModel):
     total: int
     page: int
     limit: int
+
+
+class UserListResponse(ListResponse):
+    # Drives the badge on the admin panel's Pending tab.
+    pending_count: int
 
 
 class TelemetryResponse(CamelModel):

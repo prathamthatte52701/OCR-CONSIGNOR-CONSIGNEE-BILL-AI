@@ -11,6 +11,7 @@ import Dashboard from "./pages/Dashboard";
 import UploadPage from "./pages/UploadPage";
 import DocumentsPage from "./pages/DocumentsPage";
 import DocumentDetailPage from "./pages/DocumentDetailPage";
+import DocumentsViewAllPage from "./pages/DocumentsViewAllPage";
 import ProfilePage from "./pages/ProfilePage";
 import ActivityPage from "./pages/ActivityPage";
 import HelpPage from "./pages/HelpPage";
@@ -38,6 +39,7 @@ export default function App() {
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/upload" element={<UploadPage />} />
             <Route path="/documents" element={<DocumentsPage />} />
+            <Route path="/documents/view-all" element={<DocumentsViewAllPage />} />
             <Route path="/documents/:id" element={<DocumentDetailPage />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/activity" element={<ActivityPage />} />

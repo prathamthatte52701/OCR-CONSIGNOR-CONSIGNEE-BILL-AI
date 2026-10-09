@@ -27,10 +27,11 @@ def test_password_rejects_whitespace_anywhere() -> None:
     assert is_valid_password("Abcdef1! ") is False
 
 
-def test_password_length_bounds() -> None:
-    assert is_valid_password("Ab1!" + "a" * 4) is True  # 8 chars total, valid
-    assert is_valid_password("Ab1!aa") is False  # 6 chars, too short
-    assert is_valid_password("Ab1!" + "a" * 29) is False  # 33 chars, too long
+def test_password_length_bounds_are_8_to_64_bytes() -> None:
+    assert is_valid_password("Ab1!" + "a" * 4) is True  # 8 bytes, valid
+    assert is_valid_password("Ab1!aa") is False  # 6 bytes, too short
+    assert is_valid_password("Ab1!" + "a" * 60) is True  # exactly 64 bytes
+    assert is_valid_password("Ab1!" + "a" * 61) is False  # 65 bytes, too long
 
 
 def test_email_basic_shape() -> None:
@@ -38,3 +39,12 @@ def test_email_basic_shape() -> None:
     assert is_valid_email("bad-email") is False
     assert is_valid_email("user@") is False
     assert is_valid_email("user @example.com") is False
+
+
+def test_common_password_blocklist_catches_variants() -> None:
+    from app.core.validators import is_common_password
+
+    assert is_common_password("Password1!") is True
+    assert is_common_password("PASSWORD123#") is True
+    assert is_common_password("Qwerty@2024") is True
+    assert is_common_password("Zr8!kQ2mXv") is False

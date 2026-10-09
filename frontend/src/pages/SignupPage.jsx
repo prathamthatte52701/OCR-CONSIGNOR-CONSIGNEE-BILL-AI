@@ -50,7 +50,7 @@ export default function SignupPage() {
 
           <div>
             <label className="text-xs text-text-muted block mb-1">
-              Password (8-32 chars, upper/lower/number/special, no spaces)
+              Password (8-64 characters, upper/lower/number/special, no spaces, not a common password)
             </label>
             <PasswordInput required value={form.password} onChange={update("password")} />
           </div>

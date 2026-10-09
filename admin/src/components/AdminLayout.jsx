@@ -48,7 +48,9 @@ export default function AdminLayout() {
           </nav>
 
           <div className="flex items-center gap-3">
-            <span className="hidden sm:inline text-sm text-text-muted">{username}</span>
+            <NavLink to="/profile" className="hidden sm:inline text-sm text-text-muted hover:text-accent">
+              {username}
+            </NavLink>
             <button onClick={handleLogout} className="flex items-center gap-1.5 text-sm text-text-muted hover:text-danger">
               <LogOut size={15} />
               <span className="hidden sm:inline">Log out</span>

@@ -1,6 +1,7 @@
 """Auth routes: signup (no auto-login), login, profile, change-password, forgot-password."""
 
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pymongo.errors import DuplicateKeyError
@@ -8,14 +9,20 @@ from pymongo.errors import DuplicateKeyError
 from app.core.audit_log import log_action
 from app.core.database import get_database
 from app.core.rate_limit import check_login_email_limit, limiter
-from app.core.security import hash_password, sign_token, verify_password
+from app.core.security import DUMMY_PASSWORD_HASH, hash_password, sign_token, verify_password
 from app.core.validators import (
     is_valid_email,
-    is_valid_password,
     is_valid_username,
     normalize_email,
+    password_problem,
 )
-from app.features.auth.dependencies import CurrentUser, get_current_user
+from app.features.auth.dependencies import (
+    STATUS_APPROVED,
+    STATUS_PENDING,
+    CurrentUser,
+    get_current_user,
+    raise_if_not_approved,
+)
 from app.features.auth.schemas import (
     ActivityListResponse,
     AuthResponse,
@@ -32,9 +39,13 @@ router = APIRouter()
 
 GENERIC_SIGNUP_ERROR = "Unable to create account. Please try a different username or email."
 GENERIC_LOGIN_ERROR = "Invalid email or password."
-PASSWORD_RULE_ERROR = (
-    "Password must be 8-32 chars with upper, lower, number, special char, and no whitespace."
-)
+
+
+def _reject_bad_password(password: str, username: str | None, email: str | None) -> None:
+    """400 with the first problem found (length in bytes, character rules, blocklist, own
+    username/email). Only for NEW passwords - never called on login."""
+    if (problem := password_problem(password, username, email)) is not None:
+        raise HTTPException(status_code=400, detail=problem)
 
 
 @router.post("/signup", status_code=201)
@@ -48,11 +59,7 @@ async def signup(request: Request, body: SignupRequest) -> dict[str, str]:
         )
     if not is_valid_email(email):
         raise HTTPException(status_code=400, detail="Invalid email address.")
-    if not is_valid_password(body.password):
-        raise HTTPException(
-            status_code=400,
-            detail=PASSWORD_RULE_ERROR,
-        )
+    _reject_bad_password(body.password, body.username, email)
 
     db = get_database()
 
@@ -71,6 +78,7 @@ async def signup(request: Request, body: SignupRequest) -> dict[str, str]:
                 "email": email,
                 "passwordHash": password_hash,
                 "role": "user",
+                "status": STATUS_PENDING,
                 "tokenVersion": 0,
                 "createdAt": now,
                 "updatedAt": now,
@@ -80,7 +88,7 @@ async def signup(request: Request, body: SignupRequest) -> dict[str, str]:
         raise HTTPException(status_code=400, detail=GENERIC_SIGNUP_ERROR) from None
 
     await log_action(None, "signup", {"email": email})
-    return {"message": "Account created. Please log in."}
+    return {"message": "Account created. Waiting for admin approval."}
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -93,8 +101,16 @@ async def login(request: Request, body: LoginRequest) -> AuthResponse:
 
     db = get_database()
     user = await db.users.find_one({"email": email})
-    if user is None or not verify_password(body.password, user["passwordHash"]):
+    # Always exactly one bcrypt check (against a dummy hash when there is no usable password)
+    # so unknown email / no-password account / wrong password are indistinguishable in both
+    # the response and the timing.
+    stored_hash = user.get("passwordHash") if user else None
+    password_ok = verify_password(body.password, stored_hash or DUMMY_PASSWORD_HASH)
+    if user is None or not stored_hash or not password_ok:
         raise HTTPException(status_code=401, detail=GENERIC_LOGIN_ERROR)
+    # Checked only AFTER the password is proven, so the pending/rejected message is never
+    # shown to someone who doesn't own the account (no status oracle).
+    raise_if_not_approved(user.get("status", STATUS_APPROVED))
 
     token = sign_token(str(user["_id"]), user.get("tokenVersion", 0), user.get("role", "user"))
     await log_action(user["_id"], "login", {})
@@ -117,26 +133,26 @@ async def get_me(current_user: CurrentUser = Depends(get_current_user)) -> MeRes
 async def update_me(
     body: UpdateMeRequest, current_user: CurrentUser = Depends(get_current_user)
 ) -> MeResponse:
-    updates: dict[str, str] = {}
+    # Email is the login identity and the approval anchor, so only an admin may change it
+    # (admin panel -> PATCH /api/admin/users/{id}). Re-sending the unchanged address is
+    # harmless and allowed (the profile form does). Checked FIRST so nothing is half-applied.
+    if body.email is not None and normalize_email(body.email) != current_user.email:
+        raise HTTPException(
+            status_code=403, detail="Only an admin can change your email. Contact the admin."
+        )
+
+    updates: dict[str, Any] = {}
     if body.username is not None:
         if not is_valid_username(body.username):
             raise HTTPException(
                 status_code=400, detail="Username must be 3-8 characters, no whitespace."
             )
         updates["username"] = body.username
-    if body.email is not None:
-        normalized_email = normalize_email(body.email)
-        if not is_valid_email(normalized_email):
-            raise HTTPException(status_code=400, detail="Invalid email address.")
-        updates["email"] = normalized_email
 
     db = get_database()
     if updates:
-        updates["updatedAt"] = datetime.now(UTC)  # type: ignore[assignment]
-        try:
-            await db.users.update_one({"_id": current_user.id}, {"$set": updates})
-        except DuplicateKeyError:
-            raise HTTPException(status_code=400, detail="Email already in use.") from None
+        updates["updatedAt"] = datetime.now(UTC)
+        await db.users.update_one({"_id": current_user.id}, {"$set": updates})
 
     user = await db.users.find_one({"_id": current_user.id})
     if user is None:
@@ -178,15 +194,12 @@ async def change_password(
     body: ChangePasswordRequest,
     current_user: CurrentUser = Depends(get_current_user),
 ) -> AuthResponse:
-    if not is_valid_password(body.new_password):
-        raise HTTPException(
-            status_code=400,
-            detail=PASSWORD_RULE_ERROR,
-        )
+    _reject_bad_password(body.new_password, current_user.username, current_user.email)
 
     db = get_database()
     user = await db.users.find_one({"_id": current_user.id})
-    if user is None or not verify_password(body.current_password, user["passwordHash"]):
+    stored_hash = user.get("passwordHash") if user else None
+    if user is None or not stored_hash or not verify_password(body.current_password, stored_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect.")
 
     new_token_version = user.get("tokenVersion", 0) + 1
@@ -228,14 +241,10 @@ async def forgot_password_verify(
 async def forgot_password_reset(
     request: Request, body: ForgotPasswordResetRequest
 ) -> dict[str, str]:
-    if not is_valid_password(body.new_password):
-        raise HTTPException(
-            status_code=400,
-            detail=PASSWORD_RULE_ERROR,
-        )
+    email = normalize_email(body.email)
+    _reject_bad_password(body.new_password, body.username, email)
 
     db = get_database()
-    email = normalize_email(body.email)
     user = await db.users.find_one({"username": body.username, "email": email})
     if user is None:
         raise HTTPException(status_code=400, detail="Username and email do not match any account.")

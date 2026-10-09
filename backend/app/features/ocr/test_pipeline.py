@@ -30,3 +30,15 @@ def test_preserves_top_to_bottom_order_within_column() -> None:
 
 def test_empty_input() -> None:
     assert split_into_columns([]) == ("", "")
+
+
+def test_value_slightly_above_label_stays_on_the_labels_row() -> None:
+    lines = [
+        _line("Consignee Code", 10, 100, y1=0),
+        _line("Request No", 500, 600, y1=14),
+        _line("0000166771", 640, 740, y1=10),
+        _line("PO No", 500, 560, y1=40),
+        _line("3242064440", 640, 740, y1=36),
+    ]
+    _, right = split_into_columns(lines)
+    assert right.split("\n") == ["Request No  0000166771", "PO No  3242064440"]

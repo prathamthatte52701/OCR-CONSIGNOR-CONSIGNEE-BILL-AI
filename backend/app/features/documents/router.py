@@ -18,6 +18,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.audit_log import log_action
 from app.core.database import get_database
+from app.core.filenames import attachment_header, safe_filename
 from app.core.object_id import is_valid_object_id
 from app.core.orphaned_files import record_orphan
 from app.features.auth.dependencies import CurrentUser, get_current_user
@@ -65,7 +66,11 @@ async def _get_owned_document(
 ) -> dict[str, Any]:
     if not is_valid_object_id(document_id):
         raise HTTPException(status_code=400, detail="Invalid document id.")
-    doc = await db.documents.find_one({"_id": ObjectId(document_id), "userId": user_id})
+    # isDeleted: soft-delete was removed (delete is permanent now), but a leftover document
+    # still flagged isDeleted=True must never resurface for its owner.
+    doc = await db.documents.find_one(
+        {"_id": ObjectId(document_id), "userId": user_id, "isDeleted": {"$ne": True}}
+    )
     if doc is None:
         raise HTTPException(status_code=404, detail="Document not found.")
     return doc
@@ -117,6 +122,21 @@ async def _run_pipeline_and_update(
         )
 
 
+_READ_CHUNK = 64 * 1024
+
+
+async def _read_capped(upload: UploadFile, label: str) -> bytes:
+    """Reads an uploaded file in chunks, aborting the moment it passes MAX_FILE_SIZE."""
+    chunks: list[bytes] = []
+    total = 0
+    while chunk := await upload.read(_READ_CHUNK):
+        total += len(chunk)
+        if total > MAX_FILE_SIZE:
+            raise HTTPException(status_code=400, detail=f"{label} file exceeds the 5MB limit.")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 @router.post("/upload", status_code=201, response_model=UploadResponse)
 async def upload_document(
     background_tasks: BackgroundTasks,
@@ -124,14 +144,15 @@ async def upload_document(
     part2: UploadFile = File(...),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> UploadResponse:
-    part1_bytes = await part1.read()
-    part2_bytes = await part2.read()
-
+    # The middleware in main.py already refused an oversized request by Content-Length and
+    # cuts a streamed one off; each file is ALSO capped here while it is being read, so one
+    # file can never be pulled fully into memory past the limit (Part 1 is checked before
+    # Part 2 is even read).
+    part1_bytes = await _read_capped(part1, "Part 1")
+    part2_bytes = await _read_capped(part2, "Part 2")
     for label, data in (("Part 1", part1_bytes), ("Part 2", part2_bytes)):
         if not data:
             raise HTTPException(status_code=400, detail=f"{label} file is empty.")
-        if len(data) > MAX_FILE_SIZE:
-            raise HTTPException(status_code=400, detail=f"{label} file exceeds the 5MB limit.")
 
     part1_mime = _sniff_mime_type(part1_bytes)
     part2_mime = _sniff_mime_type(part2_bytes)
@@ -140,9 +161,11 @@ async def upload_document(
     if part2_mime not in ALLOWED_MIME_TYPES:
         raise HTTPException(status_code=400, detail="Part 2 file type not supported.")
 
+    part1_name = safe_filename(part1.filename, "part1")
+    part2_name = safe_filename(part2.filename, "part2")
     db = get_database()
-    part1_file_id = await upload_buffer(part1_bytes, part1.filename or "part1", part1_mime)
-    part2_file_id = await upload_buffer(part2_bytes, part2.filename or "part2", part2_mime)
+    part1_file_id = await upload_buffer(part1_bytes, part1_name, part1_mime)
+    part2_file_id = await upload_buffer(part2_bytes, part2_name, part2_mime)
 
     now = datetime.now(UTC)
     result = await db.documents.insert_one(
@@ -152,13 +175,14 @@ async def upload_document(
             "edited": False,
             "hasLowConfidenceFields": False,
             "multiPage": False,
+            "recoveryAttempts": 0,
             "part1GridFsFileId": part1_file_id,
-            "part1OriginalFilename": part1.filename,
+            "part1OriginalFilename": part1_name,
             "part1MimeType": part1_mime,
             "part1Size": len(part1_bytes),
             "part1FilePurged": False,
             "part2GridFsFileId": part2_file_id,
-            "part2OriginalFilename": part2.filename,
+            "part2OriginalFilename": part2_name,
             "part2MimeType": part2_mime,
             "part2Size": len(part2_bytes),
             "part2FilePurged": False,
@@ -206,7 +230,7 @@ def _build_list_query(
     date: str | None,
     date_range: str | None,
 ) -> dict[str, Any]:
-    query: dict[str, Any] = {"userId": current_user.id}
+    query: dict[str, Any] = {"userId": current_user.id, "isDeleted": {"$ne": True}}
     if invoice_no:
         query["invoiceNo"] = {"$regex": re.escape(invoice_no), "$options": "i"}
     if consignee_code:
@@ -276,9 +300,11 @@ async def download_all(
                 skipped += 1
                 continue
 
-            folder = doc.get("invoiceNo") or str(doc["_id"])
-            part1_name = doc.get("part1OriginalFilename") or "part1"
-            part2_name = doc.get("part2OriginalFilename") or "part2"
+            # Both come from untrusted text (the OCR'd invoice number, the uploaded filename):
+            # sanitised so an entry can never contain "../" or an absolute path (zip slip).
+            folder = safe_filename(doc.get("invoiceNo"), str(doc["_id"]))
+            part1_name = safe_filename(doc.get("part1OriginalFilename"), "part1")
+            part2_name = safe_filename(doc.get("part2OriginalFilename"), "part2")
             zf.writestr(f"{folder}/part1_{part1_name}", part1_data)
             zf.writestr(f"{folder}/part2_{part2_name}", part2_data)
             included += 1
@@ -304,7 +330,7 @@ def ist_today_utc_range(now_ist: datetime) -> tuple[datetime, datetime]:
 @router.get("/stats", response_model=StatsResponse)
 async def get_stats(current_user: CurrentUser = Depends(get_current_user)) -> StatsResponse:
     db = get_database()
-    base = {"userId": current_user.id}
+    base = {"userId": current_user.id, "isDeleted": {"$ne": True}}
 
     today_start_utc, today_end_utc = ist_today_utc_range(datetime.now(IST))
 
@@ -345,11 +371,10 @@ async def download_part1(
     if doc.get("part1FilePurged"):
         raise HTTPException(status_code=400, detail="Part 1 file has been purged.")
     data = await download_buffer(doc["part1GridFsFileId"])
-    filename = doc.get("part1OriginalFilename") or "part1"
     return Response(
         content=data,
         media_type=doc.get("part1MimeType") or "application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=attachment_header(doc.get("part1OriginalFilename"), "part1"),
     )
 
 
@@ -362,11 +387,10 @@ async def download_part2(
     if doc.get("part2FilePurged"):
         raise HTTPException(status_code=400, detail="Part 2 file has been purged.")
     data = await download_buffer(doc["part2GridFsFileId"])
-    filename = doc.get("part2OriginalFilename") or "part2"
     return Response(
         content=data,
         media_type=doc.get("part2MimeType") or "application/octet-stream",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers=attachment_header(doc.get("part2OriginalFilename"), "part2"),
     )
 
 
@@ -388,7 +412,13 @@ async def reprocess_document(
 
     await db.documents.update_one(
         {"_id": doc["_id"]},
-        {"$set": {"uploadStatus": "processing", "updatedAt": datetime.now(UTC)}},
+        {
+            "$set": {
+                "uploadStatus": "processing",
+                "recoveryAttempts": 0,  # a fresh run gets a fresh restart-recovery budget
+                "updatedAt": datetime.now(UTC),
+            }
+        },
     )
     background_tasks.add_task(
         _run_pipeline_and_update,

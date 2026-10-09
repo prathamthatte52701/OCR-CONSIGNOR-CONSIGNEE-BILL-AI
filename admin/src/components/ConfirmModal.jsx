@@ -6,36 +6,66 @@ const SEVERITY_STYLES = {
   critical: { ring: "ring-danger", button: "bg-danger text-white hover:brightness-90" },
 };
 
-export default function ConfirmModal({ open, title, message, severity = "normal", confirmLabel = "Confirm", requirePhrase, onConfirm, onCancel }) {
+
+// Enter confirms, Escape cancels (Escape is the browser's native <dialog> "cancel" event).
+// Enter is deliberately ignored when:
+//  - focus is on a button/link/field - the control itself reacts (Cancel stays Cancel, and an
+//    input inside a <form> still submits normally);
+//  - the key is auto-repeating (holding Enter must never confirm the NEXT dialog as well);
+//  - an IME is composing text, or the dialog is busy.
+function isPlainEnter(event) {
+  if (event.key !== "Enter" || event.repeat || event.isComposing) return false;
+  return !["BUTTON", "A", "INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName);
+}
+
+export default function ConfirmModal({ open, title, message, severity = "normal", confirmLabel = "Confirm", requirePhrase, busy = false, onConfirm, onCancel }) {
   const ref = useRef(null);
+  const confirmedRef = useRef(false); // a second Enter/click must never confirm twice
   const [phrase, setPhrase] = useState("");
 
   useEffect(() => {
     if (open) {
+      confirmedRef.current = false;
       setPhrase("");
       ref.current?.showModal();
+      // showModal() focuses the first button (Cancel), where Enter would cancel. Focus the
+      // dialog itself instead so a plain Enter confirms; a typed-phrase modal keeps its input.
+      if (!requirePhrase) ref.current?.focus();
     } else {
       ref.current?.close();
     }
-  }, [open]);
+  }, [open, requirePhrase]);
 
   if (!open) return null;
   const styles = SEVERITY_STYLES[severity] || SEVERITY_STYLES.normal;
   const phraseOk = !requirePhrase || phrase === requirePhrase;
 
+  const confirm = () => {
+    if (confirmedRef.current || busy || !phraseOk) return;
+    confirmedRef.current = true;
+    onConfirm();
+  };
+
   return (
     <dialog
       ref={ref}
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        if (isPlainEnter(e)) {
+          e.preventDefault();
+          confirm();
+        }
+      }}
       onCancel={(e) => {
         e.preventDefault();
         onCancel();
       }}
-      className={cn("backdrop:bg-black/60 bg-surface text-text rounded-lg p-0 w-[92vw] max-w-md ring-2", styles.ring)}
+      className={cn("backdrop:bg-black/60 bg-surface text-text rounded-lg p-0 w-[92vw] max-w-md ring-2 outline-none", styles.ring)}
     >
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (phraseOk) onConfirm();
+          confirm();
         }}
         className="p-5"
       >
@@ -62,7 +92,7 @@ export default function ConfirmModal({ open, title, message, severity = "normal"
           </button>
           <button
             type="submit"
-            disabled={!phraseOk}
+            disabled={!phraseOk || busy}
             className={cn("px-4 py-2 rounded text-sm font-medium disabled:opacity-40", styles.button)}
           >
             {confirmLabel}

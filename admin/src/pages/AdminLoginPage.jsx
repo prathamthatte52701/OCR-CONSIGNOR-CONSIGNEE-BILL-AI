@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { ShieldAlert } from "lucide-react";
 import { adminAuthApi } from "../api/admin";
@@ -66,6 +66,11 @@ export default function AdminLoginPage() {
           >
             {busy ? "Logging in..." : "Log in"}
           </button>
+          <div className="text-center text-xs text-text-muted">
+            <Link to="/forgot-password" className="hover:text-accent">
+              Forgot password?
+            </Link>
+          </div>
         </form>
       </div>
     </div>

@@ -8,15 +8,32 @@ const SEVERITY_STYLES = {
   critical: { ring: "ring-danger", button: "bg-danger text-white hover:brightness-90" },
 };
 
+
+// Enter confirms, Escape cancels (Escape is the browser's native <dialog> "cancel" event).
+// Enter is deliberately ignored when:
+//  - focus is on a button/link/field - the control itself reacts (Cancel stays Cancel, and an
+//    input inside a <form> still submits normally);
+//  - the key is auto-repeating (holding Enter must never confirm the NEXT dialog as well);
+//  - an IME is composing text, or the dialog is busy.
+function isPlainEnter(event) {
+  if (event.key !== "Enter" || event.repeat || event.isComposing) return false;
+  return !["BUTTON", "A", "INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName);
+}
+
 export default function GlobalConfirmDialog() {
   const dialog = useDialogStore((s) => s.dialog);
   const ref = useRef(null);
+  const confirmedRef = useRef(false); // a second Enter/click must never confirm twice
   const [phraseInput, setPhraseInput] = useState("");
 
   useEffect(() => {
     if (dialog) {
+      confirmedRef.current = false;
       setPhraseInput("");
       ref.current?.showModal();
+      // showModal() focuses the first button (Cancel), where Enter would cancel. Focus the
+      // dialog itself instead so a plain Enter confirms; a typed-phrase dialog keeps its input.
+      if (!dialog.requirePhrase) ref.current?.focus();
     } else {
       ref.current?.close();
     }
@@ -26,22 +43,35 @@ export default function GlobalConfirmDialog() {
   const styles = SEVERITY_STYLES[dialog.severity] || SEVERITY_STYLES.normal;
   const phraseOk = !dialog.requirePhrase || phraseInput === dialog.requirePhrase;
 
+  const confirm = () => {
+    if (confirmedRef.current || !phraseOk) return;
+    confirmedRef.current = true;
+    dialog.onConfirm();
+  };
+
   return (
     <dialog
       ref={ref}
+      tabIndex={-1}
+      onKeyDown={(e) => {
+        if (isPlainEnter(e)) {
+          e.preventDefault();
+          confirm();
+        }
+      }}
       onCancel={(e) => {
         e.preventDefault();
         dialog.onCancel();
       }}
       className={cn(
-        "backdrop:bg-black/60 bg-surface text-text rounded-lg p-0 w-[92vw] max-w-md ring-2",
+        "backdrop:bg-black/60 bg-surface text-text rounded-lg p-0 w-[92vw] max-w-md ring-2 outline-none",
         styles.ring
       )}
     >
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (phraseOk) dialog.onConfirm();
+          confirm();
         }}
         className="p-5"
       >

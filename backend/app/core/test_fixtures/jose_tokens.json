@@ -1,0 +1,9 @@
+{
+  "_comment": "Minted with python-jose 3.5.0 before the PyJWT swap (T14). Test secret only.",
+  "secret": "legacy-jose-fixture-secret-0123456789abcdef",
+  "userId": "64b7f0f0f0f0f0f0f0f0f0f0",
+  "tokenVersion": 3,
+  "role": "admin",
+  "validUntil2100": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2NGI3ZjBmMGYwZjBmMGYwZjBmMGYwZjAiLCJ0b2tlblZlcnNpb24iOjMsInJvbGUiOiJhZG1pbiIsImV4cCI6NDEwMjQ0NDgwMH0.jN_a08Vf5mhp9XEv-vf6bhoq0uqF2pZ0OpLLM_71Y0o",
+  "expired2020": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2NGI3ZjBmMGYwZjBmMGYwZjBmMGYwZjAiLCJ0b2tlblZlcnNpb24iOjMsInJvbGUiOiJhZG1pbiIsImV4cCI6MTYwMDAwMDAwMH0.olwrwUpoSl2Spid8t7ofebSbhl-1QrKFn_9p5G3zt0U"
+}

@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from pydantic import Field
+
 from app.core.base_model import CamelModel
 
 
@@ -18,8 +20,8 @@ class UploadResponse(CamelModel):
 
 
 class CorrectRequest(CamelModel):
-    field: str
-    value: str | None = None
+    field: str = Field(max_length=64)
+    value: str | None = Field(default=None, max_length=2000)
 
 
 class StatsResponse(CamelModel):

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { Trash2, FileX2 } from "lucide-react";
+import { Trash2, FileX2, Download } from "lucide-react";
 import { adminApi } from "../api/admin";
+import { readErrorMessage } from "../api/client";
 import LoadingState from "../components/LoadingState";
 import ConfirmModal from "../components/ConfirmModal";
 import { formatIST } from "../lib/formatDate";
@@ -38,6 +39,20 @@ export default function AdminDocumentDetailPage() {
       setEditValue("");
     } catch (err) {
       toast.error(err.userMessage || "Could not update field.");
+    }
+  };
+
+  const handleDownload = async (part) => {
+    try {
+      const { blob, filename } = await adminApi.downloadDocumentFile(id, part);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(await readErrorMessage(err, "Could not download the file."));
     }
   };
 
@@ -79,7 +94,17 @@ export default function AdminDocumentDetailPage() {
             {formatIST(doc.createdAt)}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {["part1", "part2"].map((part) => (
+            <button
+              key={part}
+              onClick={() => handleDownload(part)}
+              disabled={doc[`${part}FilePurged`]}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-border hover:bg-surface-raised disabled:opacity-40"
+            >
+              <Download size={13} /> {part === "part1" ? "Part 1" : "Part 2"}
+            </button>
+          ))}
           <button
             onClick={() => setConfirmAction("purge")}
             disabled={doc.part1FilePurged && doc.part2FilePurged}

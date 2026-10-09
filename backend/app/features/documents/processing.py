@@ -11,6 +11,7 @@ from app.features.ocr.extraction import (
     PAN_RE,
     PART1_FIELD_CLASSES,
     PART2_SUMMARY_FIELD_CLASSES,
+    GSTIN_RE,
     FieldClass,
     correct_field,
     extract_pincode,
@@ -68,6 +69,38 @@ def _apply_pan_request_swap_safety_net(raw: dict[str, Any]) -> dict[str, Any]:
         return {**raw, "consignorPan": None, "requestNo": consignor_pan}
 
     return raw
+
+
+# General format net for the CONSIGNOR block: each of these fields has one fixed shape, so a
+# value sitting in the wrong one of them is moved to the field its shape belongs to. Only
+# fires for values that exactly match a shape and only fills a field that does not already
+# hold a value of its own shape - it never invents or overwrites a correct value.
+_CONSIGNOR_SHAPES: dict[str, re.Pattern[str]] = {
+    "consignorPoNo": _PO_NO_RE,
+    "requestNo": _REQUEST_NO_RE,
+    "consignorPan": PAN_RE,
+    "consignorGstin": GSTIN_RE,
+}
+
+
+def _apply_format_reassignment_safety_net(raw: dict[str, Any]) -> dict[str, Any]:
+    result = dict(raw)
+    pool = [v.strip() for k in _CONSIGNOR_SHAPES if isinstance(v := raw.get(k), str)]
+    for field, shape in _CONSIGNOR_SHAPES.items():
+        current = result.get(field)
+        if isinstance(current, str) and shape.fullmatch(current.strip()):
+            continue
+        match = next((v for v in pool if shape.fullmatch(v)), None)
+        if match is not None:
+            result[field] = match
+    # a value moved into its own field must not stay behind in a field of the wrong shape
+    for field, shape in _CONSIGNOR_SHAPES.items():
+        current = result.get(field)
+        if isinstance(current, str) and not shape.fullmatch(current.strip()):
+            for other, other_shape in _CONSIGNOR_SHAPES.items():
+                if other != field and other_shape.fullmatch(current.strip()) and result.get(other) == current.strip():
+                    result[field] = None
+    return result
 
 
 def _apply_corrections(raw: dict[str, Any], field_classes: dict[str, FieldClass]) -> dict[str, Any]:
@@ -219,6 +252,7 @@ async def run_full_pipeline(
     raw_part1 = await process_part1(part1_bytes, part1_mime)
     raw_part1 = _apply_po_request_swap_safety_net(raw_part1)
     raw_part1 = _apply_pan_request_swap_safety_net(raw_part1)
+    raw_part1 = _apply_format_reassignment_safety_net(raw_part1)
     raw_part2 = await process_part2(part2_bytes, part2_mime)
 
     update: dict[str, Any] = _apply_corrections(raw_part1, PART1_FIELD_CLASSES)
