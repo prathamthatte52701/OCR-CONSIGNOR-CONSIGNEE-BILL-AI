@@ -14,7 +14,7 @@ from app.features.ocr.table_html_parser import (
     Row,
     find_item_rows,
     parse_table_rows,
-    read_row_by_column_map,
+    read_item_row,
 )
 
 # "Page 1 of 2" (or higher) means the item table continues on a page not in this upload.
@@ -69,6 +69,33 @@ def _split_sr_no_description(merged: str | None) -> tuple[str | None, str | None
     return None, merged.strip()
 
 
+def _number(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(re.sub(r"[,\s]", "", value))
+    except ValueError:
+        return None
+
+
+def _repair_quantity(items: list[dict[str, str | None]]) -> None:
+    """On this form amount = basic x quantity. The quantity digit is printed small and light
+    and is often lost (None) or misread by the cell OCR, so when quantity is not a whole
+    number that explains amount from basic, a whole-number amount / basic ratio replaces it.
+    Never touches a quantity that already agrees, and never invents one when basic or amount
+    is missing."""
+    for item in items:
+        basic, amount = _number(item["basic"]), _number(item["amount"])
+        if not basic or not amount:
+            continue
+        quantity = _number(item["quantity"])
+        if quantity is not None and abs(basic * quantity - amount) < 0.01:
+            continue
+        ratio = amount / basic
+        if 0 < round(ratio) < 1000 and abs(ratio - round(ratio)) < 1e-9:
+            item["quantity"] = str(round(ratio))
+
+
 def build_line_items(
     item_rows: list[tuple[Row, dict[str, int]]],
 ) -> list[dict[str, str | None]]:
@@ -78,7 +105,7 @@ def build_line_items(
         # table_html_parser.build_column_map/read_row_by_column_map) - this table's
         # detected column ORDER and per-cell colspan both vary between real documents, so
         # there is no fixed left-to-right position that's safe to assume.
-        fields = read_row_by_column_map(row, column_map)
+        fields = read_item_row(row, column_map)
         sr_no = fields.get("srNo")
         description = fields.get("description")
         hsn_sac = fields.get("hsnSac")
@@ -107,6 +134,7 @@ def build_line_items(
                 "amount": amount,
             }
         )
+    _repair_quantity(items)
     return items
 
 
@@ -135,9 +163,13 @@ async def process_part2(file_bytes: bytes, mime_type: str) -> dict[str, Any]:
     if not tables:
         return {"lineItems": [], **_EMPTY_SUMMARY, "multiPage": multi_page, "tableDetected": False}
 
-    rows = parse_table_rows(tables[0])
-    item_rows = find_item_rows(rows)
-    line_items = build_line_items(item_rows)
+    # A page can come back as several tables (e.g. a footer block split off, or the item rows
+    # in the second one); the item table is the one that actually yields item rows.
+    line_items: list[dict[str, str | None]] = []
+    for table in tables:
+        candidate = build_line_items(find_item_rows(parse_table_rows(table)))
+        if len(candidate) > len(line_items):
+            line_items = candidate
 
     # The full-page text (not just the detected table's summary rows) is used here since some
     # real samples have the tax-summary totals sit right at the table's visual edge and get

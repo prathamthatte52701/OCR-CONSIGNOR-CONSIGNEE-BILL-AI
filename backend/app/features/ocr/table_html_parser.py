@@ -70,7 +70,12 @@ def _looks_like_column_header(row: Row) -> bool:
     # part-code abbreviations, never that word), so it alone is already a strong anchor;
     # this only needs to rule out matching a stray unrelated row that happens to also
     # contain "DESCRIPTION" with no header-shaped label at all, which real samples never do.
-    return "DESCRIPTION" in joined and ("SR" in joined or "SL" in joined or "SP" in joined)
+    if "DESCRIPTION" not in joined:
+        return False
+    if "SR" in joined or "SL" in joined or "SP" in joined:
+        return True
+    # SR No column cropped off the photo: only "No." is left of it, but the other labels are there
+    return any(label in joined for label in ("HSN", "BASIC", "QUANTITY"))
 
 
 def _contains_summary_keyword(row: Row) -> bool:
@@ -140,6 +145,45 @@ def read_row_by_column_map(row: Row, column_map: dict[str, int]) -> dict[str, st
     return {field: position_lookup.get(idx) for field, idx in column_map.items()}
 
 
+_HSN_CELL_RE = re.compile(r"^\s*\d{6}\s*$")
+_SR_CELL_RE = re.compile(r"^\s*\d{1,2}\s*$")
+
+
+def _read_row_from_hsn_cell(row: Row) -> dict[str, str | None] | None:
+    """Reads an item row outward from its HSN/SAC cell (always the 6-digit cell, followed by
+    basic, quantity, amount). Used only when the header-position read did not land on an HSN
+    cell - an empty SR No cell that PP-Structure drops from one row shifts every later column
+    of that row by one, which the header's logical column map cannot see."""
+    texts = [text for text, _ in row]
+    hsn_index = next((i for i, text in enumerate(texts) if _HSN_CELL_RE.match(text)), None)
+    if hsn_index is None:
+        return None
+    before = texts[:hsn_index]
+    after = [t for t in texts[hsn_index + 1 :] if not any(k in t.upper() for k in _SUMMARY_KEYWORDS)]
+    described = [t for t in before if re.search(r"[A-Za-z]", t)]
+    return {
+        "srNo": next((t for t in before if _SR_CELL_RE.match(t)), None),
+        "description": max(described, key=len) if described else None,
+        "hsnSac": texts[hsn_index],
+        "basic": (after[0] or None) if len(after) > 0 else None,
+        "quantity": (after[1] or None) if len(after) > 1 else None,
+        "amount": (after[2] or None) if len(after) > 2 else None,
+    }
+
+
+def read_item_row(row: Row, column_map: dict[str, int]) -> dict[str, str | None]:
+    fields = read_row_by_column_map(row, column_map)
+    hsn = fields.get("hsnSac")
+    if hsn is not None and _HSN_CELL_RE.match(hsn):
+        return fields
+    anchored = _read_row_from_hsn_cell(row)
+    return anchored if anchored is not None else fields
+
+
+def _strip_summary_cells(row: Row) -> Row:
+    return [cell for cell in row if not any(k in cell[0].upper() for k in _SUMMARY_KEYWORDS)]
+
+
 def find_item_rows(rows: list[Row]) -> list[tuple[Row, dict[str, int]]]:
     """Locates the header row, builds its column map, then collects every row after it
     that isn't itself a header or tax-summary row. Returns each item row paired with the
@@ -155,7 +199,13 @@ def find_item_rows(rows: list[Row]) -> list[tuple[Row, dict[str, int]]]:
                 seen_header = True
                 column_map = build_column_map(row)
             continue
-        if _looks_like_column_header(row) or _contains_summary_keyword(row):
+        if _looks_like_column_header(row):
+            break
+        if _contains_summary_keyword(row):
+            # The last item row is sometimes glued to the "Total Basic Amount" label cell.
+            # A row that still carries its own HSN cell is that item row, not the summary.
+            if any(_HSN_CELL_RE.match(text) for text, _ in row):
+                item_rows.append((_strip_summary_cells(row), column_map))
             break
         item_rows.append((row, column_map))
 

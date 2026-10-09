@@ -105,3 +105,63 @@ def test_detect_multi_page_false_for_single_page() -> None:
 
 def test_detect_multi_page_false_when_absent() -> None:
     assert detect_multi_page("no page marker here") is False
+
+
+def _html(*rows: str) -> str:
+    return "<html><body><table>" + "".join(f"<tr>{r}</tr>" for r in rows) + "</table></html>"
+
+
+def _tds(*cells: str) -> str:
+    return "".join(f"<td>{c}</td>" for c in cells)
+
+
+def test_header_without_sr_label_still_finds_item_rows() -> None:
+    from app.features.ocr.table_html_parser import find_item_rows, parse_table_rows
+
+    html = _html(
+        _tds("UNCODED RGP"),
+        _tds("No.", "Description", "HSN/SAC", "Basic", "Quantity", "Amount"),
+        _tds("", "HOB ED846", "998729", "10,000.00", "1", "10,000.00"),
+        _tds("Total Basic Amount", "10,000.00"),
+    )
+    assert len(find_item_rows(parse_table_rows(html))) == 1
+
+
+def test_last_item_row_glued_to_total_basic_amount_is_kept() -> None:
+    from app.features.ocr.table_html_parser import find_item_rows, parse_table_rows
+
+    html = _html(
+        _tds("SR No.", "Description", "HSN/SAC", "Basic", "Quantity", "Amount"),
+        _tds("2", "HOB 5390", "998729", "400.00", "1", "400.00", "Total Basic Amount"),
+        _tds("CGST", "0.00"),
+    )
+    items = build_line_items(find_item_rows(parse_table_rows(html)))
+    assert [(i["description"], i["amount"]) for i in items] == [("HOB 5390", "400.00")]
+
+
+def test_row_missing_its_empty_sr_cell_is_read_from_the_hsn_cell() -> None:
+    from app.features.ocr.table_html_parser import find_item_rows, parse_table_rows
+
+    html = _html(
+        _tds("SR No.", "Description", "HSN/SAC", "Basic", "Quantity", "Amount"),
+        _tds("HOB ED2473(126999)", "998729", "5,000.00", "1", "5,000.00"),
+        _tds("Total Basic Amount", "5,000.00"),
+    )
+    (item,) = build_line_items(find_item_rows(parse_table_rows(html)))
+    assert (item["description"], item["hsnSac"], item["basic"], item["quantity"], item["amount"]) == (
+        "HOB ED2473(126999)", "998729", "5,000.00", "1", "5,000.00",
+    )
+
+
+def test_missing_or_wrong_quantity_is_rebuilt_from_amount_over_basic() -> None:
+    from app.features.ocr.table_html_parser import find_item_rows, parse_table_rows
+
+    html = _html(
+        _tds("SR No.", "Description", "HSN/SAC", "Basic", "Quantity", "Amount"),
+        _tds("2", "SC DRILL A", "993729", "1,400.00", "", "8,400.00"),
+        _tds("3", "SC DRILL B", "993729", "900.00", "7", "900.00"),
+        _tds("4", "SC DRILL C", "993729", "900.00", "2", "1,800.00"),
+        _tds("Total Basic Amount", "11,100.00"),
+    )
+    items = build_line_items(find_item_rows(parse_table_rows(html)))
+    assert [i["quantity"] for i in items] == ["6", "1", "2"]
