@@ -2,6 +2,10 @@ import { useRef, useState } from "react";
 import { Sparkles, TriangleAlert } from "lucide-react";
 import { cn } from "../lib/utils";
 
+// Hint / outline only below this: plain free text (70) and exact values (100) are not flagged;
+// auto-corrected (55) and doubtful (20) values are. Keep in step with the backend threshold.
+const LOW_CONFIDENCE_BELOW = 60;
+
 function confidenceTone(confidence) {
   if (confidence >= 80) return "text-accent";
   if (confidence >= 40) return "text-warning";
@@ -18,7 +22,7 @@ export default function EditableField({ label, value, confidence, autoCorrected,
   const dirty = draft !== (value ?? "");
   // A value that was read but is not trusted (editing sets confidence to 100, which clears this).
   const hasValue = value !== null && value !== undefined && value !== "";
-  const lowConfidence = hasValue && typeof confidence === "number" && confidence < 80;
+  const lowConfidence = hasValue && typeof confidence === "number" && confidence < LOW_CONFIDENCE_BELOW;
   const isCell = !label; // table cells stay tidy: outline + tooltip instead of a text line
 
   const handleSave = async () => {

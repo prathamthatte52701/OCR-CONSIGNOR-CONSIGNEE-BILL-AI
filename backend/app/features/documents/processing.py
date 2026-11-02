@@ -7,11 +7,11 @@ from typing import Any
 
 from app.features.ocr.extraction import (
     CONFIDENCE_CORRECTED,
+    GSTIN_RE,
     LINE_ITEM_FIELD_CLASSES,
     PAN_RE,
     PART1_FIELD_CLASSES,
     PART2_SUMMARY_FIELD_CLASSES,
-    GSTIN_RE,
     FieldClass,
     correct_field,
     extract_pincode,
@@ -19,7 +19,9 @@ from app.features.ocr.extraction import (
 from app.features.ocr.pipeline import process_part1
 from app.features.ocr.table_extraction import process_part2
 
-LOW_CONFIDENCE_THRESHOLD = 80
+# Below this a value is flagged (hasLowConfidenceFields). Plain free text is 70 and exact values
+# 100 - neither is flagged; auto-corrected (55) and doubtful (20) values are.
+LOW_CONFIDENCE_THRESHOLD = 60
 
 # On every real sample seen so far, PO No always starts "3242..." and Request No is
 # always zero-padded starting "0000...". PO No and Request No sit on adjacent lines in
@@ -98,7 +100,11 @@ def _apply_format_reassignment_safety_net(raw: dict[str, Any]) -> dict[str, Any]
         current = result.get(field)
         if isinstance(current, str) and not shape.fullmatch(current.strip()):
             for other, other_shape in _CONSIGNOR_SHAPES.items():
-                if other != field and other_shape.fullmatch(current.strip()) and result.get(other) == current.strip():
+                if (
+                    other != field
+                    and other_shape.fullmatch(current.strip())
+                    and result.get(other) == current.strip()
+                ):
                     result[field] = None
     return result
 

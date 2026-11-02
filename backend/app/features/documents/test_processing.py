@@ -42,6 +42,21 @@ def test_has_low_confidence_false_when_all_above_threshold() -> None:
     assert _has_low_confidence(fields) is False
 
 
+def test_plain_free_text_confidence_70_is_not_low() -> None:
+    assert _has_low_confidence({"reasonConfidence": 70, "consigneeAddressConfidence": 70}) is False
+
+
+def test_auto_corrected_55_and_doubtful_20_are_low() -> None:
+    assert _has_low_confidence({"aConfidence": 100, "bConfidence": 55}) is True
+    assert _has_low_confidence({"aConfidence": 100, "bConfidence": 20}) is True
+    assert _has_low_confidence({"aConfidence": 60}) is False  # the threshold itself is fine
+
+
+def test_line_item_confidence_55_is_low() -> None:
+    assert _has_low_confidence({"lineItem0.amountConfidence": 55}) is True
+    assert _has_low_confidence({"lineItem0.descriptionConfidence": 70}) is False
+
+
 def test_min_confidence_picks_lowest_of_mixed_values() -> None:
     fields = {"aConfidence": 100, "bConfidence": 40, "notAConfidenceField": 5}
     assert _min_confidence(fields) == 40
@@ -85,5 +100,10 @@ def test_format_net_moves_values_to_the_field_their_shape_belongs_to() -> None:
 def test_format_net_leaves_correct_and_missing_values_alone() -> None:
     from app.features.documents.processing import _apply_format_reassignment_safety_net as net
 
-    good = {"consignorPoNo": "3242064440", "requestNo": "0000166771", "consignorPan": "AABCE9378F", "consignorGstin": None}
+    good = {
+        "consignorPoNo": "3242064440",
+        "requestNo": "0000166771",
+        "consignorPan": "AABCE9378F",
+        "consignorGstin": None,
+    }
     assert net(good) == good

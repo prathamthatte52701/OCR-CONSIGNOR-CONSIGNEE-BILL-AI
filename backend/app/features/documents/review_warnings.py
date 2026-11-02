@@ -52,6 +52,17 @@ def review_warnings(doc: dict[str, Any]) -> list[dict[str, str]]:
                     }
                 )
 
+    if doc.get("totalBasicAmountAutoCorrected") is True:
+        warnings.append(
+            {
+                "code": "tba_adjusted",
+                "message": (
+                    "Total Basic Amount was auto-corrected (for example recalculated from the "
+                    "line items) - please check it against the original."
+                ),
+            }
+        )
+
     grand = _money(doc.get("totalAmount"))
     if basic is not None and grand is not None:
         taxes = [_tax_amount(doc, amount, rate) for amount, rate in _TAXES]

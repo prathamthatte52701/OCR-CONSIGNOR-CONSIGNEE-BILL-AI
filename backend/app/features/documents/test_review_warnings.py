@@ -112,6 +112,29 @@ def test_missing_basic_or_total_skips_grand_total() -> None:
     assert codes(doc(totalBasicAmount="1000.00", igstAmount="180.00")) == []
 
 
+# ----------------------------------------------------------------- total auto-adjusted
+def test_tba_adjusted_warning() -> None:
+    assert codes(doc(totalBasicAmountAutoCorrected=True)) == ["tba_adjusted"]
+    assert codes(doc(totalBasicAmountAutoCorrected=False)) == []
+    assert codes(doc()) == []
+
+
+def test_tba_adjusted_only_for_processed() -> None:
+    assert review_warnings(doc(uploadStatus="failed", totalBasicAmountAutoCorrected=True)) == []
+
+
+def test_warning_order() -> None:
+    d = doc(
+        totalBasicAmount="1000.00",
+        lineItems=items("100.00"),
+        totalBasicAmountAutoCorrected=True,
+        igstAmount="0",
+        totalAmount="5000.00",
+        multiPage=True,
+    )
+    assert codes(d) == ["line_items_total", "tba_adjusted", "grand_total", "multi_page"]
+
+
 # ------------------------------------------------------------------------- multi page, status
 def test_multi_page() -> None:
     (w,) = review_warnings(doc(multiPage=True))
@@ -156,6 +179,24 @@ async def test_get_has_review_warnings_list_does_not_and_edit_clears_them(
     assert fix.status_code == 200
     after = client.get(f"/api/documents/{d['id']}", headers=h).json()
     assert [w["code"] for w in after["reviewWarnings"]] == ["multi_page"]
+
+
+async def test_manual_edit_of_the_total_clears_tba_adjusted(client: TestClient) -> None:
+    user = await make_user()
+    d = await make_document(
+        user["_id"], totalBasicAmount="100.00", totalBasicAmountAutoCorrected=True
+    )
+    h = user["headers"]
+    first = client.get(f"/api/documents/{d['id']}", headers=h).json()
+    assert [w["code"] for w in first["reviewWarnings"]] == ["tba_adjusted"]
+    fix = client.patch(
+        f"/api/documents/{d['id']}/correct",
+        json={"field": "totalBasicAmount", "value": "100.00"},
+        headers=h,
+    )
+    assert fix.status_code == 200
+    after = client.get(f"/api/documents/{d['id']}", headers=h).json()
+    assert after["reviewWarnings"] == []
 
 
 async def test_document_without_issues_returns_an_empty_list(client: TestClient) -> None:
