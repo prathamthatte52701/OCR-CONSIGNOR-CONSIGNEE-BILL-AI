@@ -8,6 +8,7 @@ import asyncio
 import io
 import logging
 import re
+import weakref
 import zipfile
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -103,6 +104,20 @@ async def _best_effort_purge_files(doc: dict[str, Any]) -> None:
                 await record_orphan(file_id, doc.get("_id"), doc.get("userId"), exc)
 
 
+_ocr_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _ocr_slot() -> asyncio.Lock:
+    """The one process-wide OCR slot. Created lazily PER running event loop (TestClient makes a
+    new loop per client; a Lock is bound to the loop it first waits on)."""
+    loop = asyncio.get_running_loop()
+    if loop not in _ocr_locks:
+        _ocr_locks[loop] = asyncio.Lock()
+    return _ocr_locks[loop]
+
+
 async def _run_pipeline_and_update(
     doc_id: ObjectId,
     part1_bytes: bytes,
@@ -114,7 +129,11 @@ async def _run_pipeline_and_update(
 ) -> None:
     db = get_database()
     try:
-        update = await run_full_pipeline(part1_bytes, part1_mime, part2_bytes, part2_mime)
+        # One OCR reader at a time across ALL uploads/reprocesses. A waiting job simply stays
+        # "processing"; the pipeline's own timeouts only start once the slot is taken, and
+        # `async with` frees the slot on a crash or a cancel.
+        async with _ocr_slot():
+            update = await run_full_pipeline(part1_bytes, part1_mime, part2_bytes, part2_mime)
         now = datetime.now(UTC)
         update["uploadStatus"] = "processed"
         update["processingError"] = None
@@ -359,9 +378,19 @@ async def bulk_upload_documents(
         except HTTPException as exc:
             results.append({"index": index, "error": f"Set {index + 1}, {exc.detail}"})
             continue
+        except Exception as exc:  # noqa: BLE001 - one broken set must never lose the others
+            logger.error("bulk set %d failed unexpectedly: class=%s", index + 1, type(exc).__name__)
+            results.append(
+                {"index": index, "error": f"Set {index + 1}, Upload failed. Please try again."}
+            )
+            continue
+        # The set exists: record it FIRST, so nothing after this point can lose it.
         jobs.append((doc_id, bytes1, mime1, bytes2, mime2))
         results.append({"index": index, "id": str(doc_id)})
-        await log_action(current_user.id, "document_uploaded", {"documentId": str(doc_id)})
+        try:
+            await log_action(current_user.id, "document_uploaded", {"documentId": str(doc_id)})
+        except Exception as exc:  # noqa: BLE001 - an audit hiccup must not fail a stored set
+            logger.error("bulk audit log failed: class=%s", type(exc).__name__)
 
     if jobs:
         background_tasks.add_task(_run_sequentially, jobs)

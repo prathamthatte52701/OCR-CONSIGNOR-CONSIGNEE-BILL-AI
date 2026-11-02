@@ -204,6 +204,81 @@ async def test_request_above_the_bulk_ceiling_is_413(client: TestClient) -> None
     assert r.status_code == 413 and "Each file" in r.json()["detail"]
 
 
+async def test_audit_log_failure_never_loses_a_set(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, pipeline_calls: list[ObjectId]
+) -> None:
+    async def broken_log(*_: Any, **__: Any) -> None:
+        raise RuntimeError("audit down")
+
+    monkeypatch.setattr(r_mod, "log_action", broken_log)
+    user = await make_user()
+    r = post(client, user, [(blob(f"a{i}"), blob(f"b{i}")) for i in range(3)])
+    assert r.status_code == 201
+    assert all("id" in x for x in r.json()["results"])
+    assert await counts() == (3, 6)
+    assert len(pipeline_calls) == 3
+
+
+async def test_unexpected_error_in_set_2_is_reported_and_others_go_on(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, pipeline_calls: list[ObjectId]
+) -> None:
+    real, n = r_mod._store_upload, []
+
+    async def sometimes_broken(*a: Any, **k: Any) -> Any:
+        n.append(1)
+        if len(n) == 2:
+            raise RuntimeError("secret detail that must not leak")
+        return await real(*a, **k)
+
+    monkeypatch.setattr(r_mod, "_store_upload", sometimes_broken)
+    user = await make_user()
+    r = post(client, user, [(blob(f"a{i}"), blob(f"b{i}")) for i in range(3)])
+    assert r.status_code == 201
+    results = r.json()["results"]
+    assert results[1]["error"] == "Set 2, Upload failed. Please try again."
+    assert "id" in results[0] and "id" in results[2]
+    assert len(pipeline_calls) == 2
+
+
+async def test_ocr_slot_allows_one_run_at_a_time_and_survives_a_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    running = peak = calls = 0
+
+    async def fake_full(*_: Any) -> dict[str, Any]:
+        nonlocal running, peak, calls
+        calls += 1
+        first = calls == 1
+        running += 1
+        peak = max(peak, running)
+        try:
+            await asyncio.sleep(0.05)
+            if first:
+                raise RuntimeError("ocr crashed")
+            return {}
+        finally:
+            running -= 1
+
+    class _Docs:
+        @staticmethod
+        async def update_one(*_: Any, **__: Any) -> None:
+            return None
+
+    class _Db:
+        documents = _Docs
+
+    monkeypatch.undo()  # drop the autouse recorder: run the REAL wrapper
+    monkeypatch.setattr(r_mod, "run_full_pipeline", fake_full)
+    monkeypatch.setattr(r_mod, "get_database", lambda: _Db())
+    args = (b"a", "image/jpeg", b"b", "image/jpeg")
+    await asyncio.gather(
+        *(r_mod._run_pipeline_and_update(ObjectId(), *args, is_reprocess=False) for _ in range(3))
+    )
+    assert calls == 3 and peak == 1  # the crash of job 1 did not block jobs 2 and 3
+
+
 # Last on purpose: its own TestClient contexts shut the app (and its db) down on exit.
 async def test_31st_bulk_request_is_429_and_single_upload_is_unaffected() -> None:
     limiter.reset()

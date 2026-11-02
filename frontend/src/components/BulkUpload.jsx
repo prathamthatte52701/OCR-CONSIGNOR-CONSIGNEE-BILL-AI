@@ -6,6 +6,8 @@ import { DocumentDetail } from "../pages/DocumentDetailPage";
 import UploadCard from "./UploadCard";
 
 const MAX_SETS = 5;
+// The server counts sets inside ITS request ("Set 1, ..."); the page has its own numbering.
+const stripSetPrefix = (text) => text.replace(/^Set \d+, /, "");
 let nextKey = 1;
 const newRow = () => ({ key: nextKey++, part1: null, part2: null, id: null, error: "" });
 
@@ -50,12 +52,11 @@ export default function BulkUpload() {
 
   const created = rows.filter((r) => r.id);
   const editable = rows.filter((r) => !r.id);
-  const fresh = editable.filter((r) => !r.error);
   const failedRows = editable.filter((r) => r.error);
   const complete = (r) => r.part1 && r.part2;
-  const canUploadAll = fresh.length > 0 && editable.every(complete) && !failedRows.length;
-  const canRetry = failedRows.length > 0 && editable.every(complete);
-  const reviewed = rows.filter((r) => r.id || r.error);
+  const canSend = editable.length > 0 && editable.every(complete);
+  const allFailed = failedRows.length === editable.length;
+  const reviewed = created; // failed rows live in the form, with their reason
   const firstBusy = created.find((r) => (statuses[r.id] ?? "busy") === "busy")?.id;
   const doneCount = created.filter((r) => ["done", "failed"].includes(statuses[r.id])).length;
   const safePage = Math.min(page, Math.max(reviewed.length - 1, 0));
@@ -72,7 +73,7 @@ export default function BulkUpload() {
           const i = batch.findIndex((b) => b.key === r.key);
           if (i < 0) return r;
           const res = results[i];
-          return res?.id ? { ...r, id: res.id, error: "" } : { ...r, error: res?.error || "Upload failed." };
+          return res?.id ? { ...r, id: res.id, error: "" } : { ...r, error: stripSetPrefix(res?.error || "Upload failed.") };
         })
       );
     } catch (err) {
@@ -147,23 +148,17 @@ export default function BulkUpload() {
             )}
             <button
               type="button"
-              disabled={!canUploadAll || uploading}
-              onClick={() => send(fresh)}
+              disabled={!canSend || uploading}
+              onClick={() => send(editable)}
               className="inline-flex items-center gap-2 bg-accent text-bg font-medium rounded px-6 py-2 text-sm hover:bg-accent-dim disabled:opacity-40"
             >
               {uploading && <Loader2 className="animate-spin" size={16} />}
-              {uploading ? "Uploading..." : `Upload all (${fresh.length})`}
+              {uploading
+                ? "Uploading..."
+                : allFailed
+                  ? `Retry failed sets (${editable.length})`
+                  : `Upload all (${editable.length})`}
             </button>
-            {failedRows.length > 0 && (
-              <button
-                type="button"
-                disabled={!canRetry || uploading}
-                onClick={() => send(failedRows)}
-                className="rounded border border-accent px-4 py-2 text-sm text-accent hover:bg-accent/10 disabled:opacity-40"
-              >
-                Retry failed sets
-              </button>
-            )}
           </div>
         </div>
       )}
@@ -177,6 +172,12 @@ export default function BulkUpload() {
 
       {created.length > 0 && (
         <section className="space-y-2">
+          {failedRows.length > 0 && (
+            <p className="text-sm text-danger">
+              {failedRows.length} {failedRows.length === 1 ? "set" : "sets"} could not be uploaded -
+              fix them above and press the button.
+            </p>
+          )}
           <p className="text-sm text-text-muted">
             {doneCount < created.length
               ? `Reading ${doneCount + 1} of ${created.length}`
@@ -219,11 +220,7 @@ export default function BulkUpload() {
               Next <ChevronRight size={16} />
             </button>
           </div>
-          {current.id ? (
-            <DocumentDetail key={current.id} id={current.id} />
-          ) : (
-            <p className="text-sm text-danger">Failed: {current.error}</p>
-          )}
+          <DocumentDetail key={current.id} id={current.id} embedded />
         </section>
       )}
 

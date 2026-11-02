@@ -82,7 +82,7 @@ function FieldGrid({ fields, doc, onSave, disabled }) {
 }
 
 // The page body, reusable with an explicit id (the bulk-upload review embeds it).
-export function DocumentDetail({ id }) {
+export function DocumentDetail({ id, embedded = false }) {
   const navigate = useNavigate();
   const { data: doc, isLoading } = useDocument(id);
   const correctField = useCorrectField(id);
@@ -149,9 +149,11 @@ export function DocumentDetail({ id }) {
     <div className="max-w-4xl">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
         <div>
-          <button onClick={() => navigate(-1)} className="text-xs text-text-muted hover:text-accent mb-1">
-            &larr; Back
-          </button>
+          {!embedded && (
+            <button onClick={() => navigate(-1)} className="text-xs text-text-muted hover:text-accent mb-1">
+              &larr; Back
+            </button>
+          )}
           <h1 className="text-xl font-semibold flex items-center gap-2">
             {doc.invoiceNo || "(no invoice no.)"}
             {doc.hasLowConfidenceFields && <AlertTriangle size={16} className="text-warning" />}
