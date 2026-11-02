@@ -11,11 +11,11 @@ import asyncio
 from typing import Any
 
 import cv2
-
 from loguru import logger
 
 from app.features.ocr import preprocessing
 from app.features.ocr.ai_extraction import extract_part1_header
+from app.features.ocr.ocr_slot import run_in_ocr_slot
 from app.features.ocr.paddle_runner import (
     OCR_TIMEOUT_SECONDS_IMAGE,
     OCR_TIMEOUT_SECONDS_PDF,
@@ -100,7 +100,7 @@ async def process_part1(file_bytes: bytes, mime_type: str) -> dict[str, Any]:
     timeout = (
         OCR_TIMEOUT_SECONDS_PDF if mime_type == "application/pdf" else OCR_TIMEOUT_SECONDS_IMAGE
     )
-    lines = await asyncio.wait_for(asyncio.to_thread(run_ocr, processed), timeout=timeout)
+    lines = await run_in_ocr_slot(run_ocr, processed, timeout=timeout)
 
     consignee_text, consignor_text = split_into_columns(lines)
     extracted = await extract_part1_header(consignee_text, consignor_text)

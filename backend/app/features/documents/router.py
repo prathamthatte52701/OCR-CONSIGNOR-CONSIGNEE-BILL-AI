@@ -8,7 +8,6 @@ import asyncio
 import io
 import logging
 import re
-import weakref
 import zipfile
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -104,20 +103,6 @@ async def _best_effort_purge_files(doc: dict[str, Any]) -> None:
                 await record_orphan(file_id, doc.get("_id"), doc.get("userId"), exc)
 
 
-_ocr_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
-    weakref.WeakKeyDictionary()
-)
-
-
-def _ocr_slot() -> asyncio.Lock:
-    """The one process-wide OCR slot. Created lazily PER running event loop (TestClient makes a
-    new loop per client; a Lock is bound to the loop it first waits on)."""
-    loop = asyncio.get_running_loop()
-    if loop not in _ocr_locks:
-        _ocr_locks[loop] = asyncio.Lock()
-    return _ocr_locks[loop]
-
-
 async def _run_pipeline_and_update(
     doc_id: ObjectId,
     part1_bytes: bytes,
@@ -129,11 +114,9 @@ async def _run_pipeline_and_update(
 ) -> None:
     db = get_database()
     try:
-        # One OCR reader at a time across ALL uploads/reprocesses. A waiting job simply stays
-        # "processing"; the pipeline's own timeouts only start once the slot is taken, and
-        # `async with` frees the slot on a crash or a cancel.
-        async with _ocr_slot():
-            update = await run_full_pipeline(part1_bytes, part1_mime, part2_bytes, part2_mime)
+        # One OCR reader at a time is enforced INSIDE the pipeline (ocr/ocr_slot.py), around the
+        # two heavy engine calls only; a waiting job simply stays "processing".
+        update = await run_full_pipeline(part1_bytes, part1_mime, part2_bytes, part2_mime)
         now = datetime.now(UTC)
         update["uploadStatus"] = "processed"
         update["processingError"] = None

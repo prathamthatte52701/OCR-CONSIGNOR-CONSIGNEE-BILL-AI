@@ -3,12 +3,12 @@ row parsing for the unambiguous item columns -> Groq-assisted structuring only f
 tax-summary section (the AI is unreliable at faithfully preserving raw HTML column position,
 so it is used only where genuine ambiguity remains, not for the well-structured item rows)."""
 
-import asyncio
 import re
 from typing import Any
 
 from app.features.ocr import preprocessing
 from app.features.ocr.ai_extraction import extract_part2_summary
+from app.features.ocr.ocr_slot import run_in_ocr_slot
 from app.features.ocr.ppstructure_runner import analyze_page
 from app.features.ocr.table_html_parser import (
     Row,
@@ -154,9 +154,7 @@ async def process_part2(file_bytes: bytes, mime_type: str) -> dict[str, Any]:
     timeout = (
         TABLE_TIMEOUT_SECONDS_PDF if mime_type == "application/pdf" else TABLE_TIMEOUT_SECONDS_IMAGE
     )
-    tables, page_text = await asyncio.wait_for(
-        asyncio.to_thread(analyze_page, image), timeout=timeout
-    )
+    tables, page_text = await run_in_ocr_slot(analyze_page, image, timeout=timeout)
 
     multi_page = detect_multi_page(page_text)
 

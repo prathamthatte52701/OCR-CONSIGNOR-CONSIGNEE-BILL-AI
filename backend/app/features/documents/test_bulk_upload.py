@@ -240,26 +240,41 @@ async def test_unexpected_error_in_set_2_is_reported_and_others_go_on(
     assert len(pipeline_calls) == 2
 
 
-async def test_ocr_slot_allows_one_run_at_a_time_and_survives_a_crash(
+async def test_ocr_calls_of_concurrent_jobs_never_overlap_and_a_crash_does_not_block(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Three jobs started together go through the REAL wrapper and the real OCR slot; the fake
+    engine call counts how many threads run it at once."""
     import asyncio
+    import threading
+    import time
 
-    running = peak = calls = 0
+    from app.features.documents import processing
+    from app.features.ocr.ocr_slot import run_in_ocr_slot
 
-    async def fake_full(*_: Any) -> dict[str, Any]:
-        nonlocal running, peak, calls
-        calls += 1
-        first = calls == 1
-        running += 1
-        peak = max(peak, running)
+    guard, state = threading.Lock(), {"now": 0, "peak": 0, "calls": 0}
+
+    def engine() -> list[Any]:
+        with guard:
+            state["calls"] += 1
+            first = state["calls"] == 1
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
         try:
-            await asyncio.sleep(0.05)
+            time.sleep(0.05)
             if first:
                 raise RuntimeError("ocr crashed")
-            return {}
+            return []
         finally:
-            running -= 1
+            with guard:
+                state["now"] -= 1
+
+    async def fake_part1(*_: Any) -> dict[str, Any]:
+        await run_in_ocr_slot(engine, timeout=5)
+        return {}
+
+    async def fake_part2(*_: Any) -> dict[str, Any]:
+        return {"lineItems": []}
 
     class _Docs:
         @staticmethod
@@ -270,13 +285,14 @@ async def test_ocr_slot_allows_one_run_at_a_time_and_survives_a_crash(
         documents = _Docs
 
     monkeypatch.undo()  # drop the autouse recorder: run the REAL wrapper
-    monkeypatch.setattr(r_mod, "run_full_pipeline", fake_full)
+    monkeypatch.setattr(processing, "process_part1", fake_part1)
+    monkeypatch.setattr(processing, "process_part2", fake_part2)
     monkeypatch.setattr(r_mod, "get_database", lambda: _Db())
     args = (b"a", "image/jpeg", b"b", "image/jpeg")
     await asyncio.gather(
         *(r_mod._run_pipeline_and_update(ObjectId(), *args, is_reprocess=False) for _ in range(3))
     )
-    assert calls == 3 and peak == 1  # the crash of job 1 did not block jobs 2 and 3
+    assert state["calls"] == 3 and state["peak"] == 1  # job 1 crashed; jobs 2 and 3 still ran
 
 
 # Last on purpose: its own TestClient contexts shut the app (and its db) down on exit.
