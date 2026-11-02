@@ -30,6 +30,9 @@ IMAGE_TOO_LARGE_TEMPLATE = (
 PDF_TOO_LARGE_MESSAGE = (
     "This PDF page is too large to read. Please use a normal page size, for example A4."
 )
+PDF_CHECK_TIMEOUT_MESSAGE = (
+    "This PDF could not be checked in time. Please upload a smaller or simpler PDF."
+)
 _BOMB_PIXELS_RE = re.compile(r"\(([\d,]+) pixels\)")
 
 
@@ -91,6 +94,6 @@ async def check_upload(buffer: bytes, mime_type: str) -> None:
                 asyncio.to_thread(check_pdf_page, buffer), timeout=_PDF_GUARD_TIMEOUT_SECONDS
             )
         except TimeoutError:
-            return  # the page-count/parse code already treats a hang as unreadable
+            raise ImageTooLarge(PDF_CHECK_TIMEOUT_MESSAGE) from None
     else:
         await asyncio.to_thread(check_image_pixels, buffer)

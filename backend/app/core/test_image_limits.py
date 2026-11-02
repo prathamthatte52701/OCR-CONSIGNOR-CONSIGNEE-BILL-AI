@@ -145,3 +145,12 @@ def test_pdf_garbage_and_encrypted_pass_through() -> None:
     doc.new_page()
     enc = doc.tobytes(encryption=fitz.PDF_ENCRYPT_AES_256, owner_pw="o", user_pw="u", permissions=0)
     check_pdf_page(enc)
+
+
+async def test_pdf_check_timeout_is_refused_not_waved_through(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    from app.core import image_limits
+
+    monkeypatch.setattr(image_limits, "_PDF_GUARD_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(image_limits, "check_pdf_page", lambda _b: time.sleep(0.5))
+    with pytest.raises(ImageTooLarge, match="could not be checked in time"):
+        await image_limits.check_upload(b"%PDF-1.4", "application/pdf")

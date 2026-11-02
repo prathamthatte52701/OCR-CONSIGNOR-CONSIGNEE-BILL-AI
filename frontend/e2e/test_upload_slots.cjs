@@ -154,7 +154,7 @@ const JPG = (name, size = 100) => ({
       await btn(page).click();
       await page
         .getByRole("alert")
-        .filter({ hasText: "Too many uploads. Please wait a few minutes and try again." })
+        .filter({ hasText: "Too many uploads. Please try again later." })
         .waitFor({ timeout: 4000 });
       await context.close();
     });

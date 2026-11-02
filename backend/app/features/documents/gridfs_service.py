@@ -1,5 +1,8 @@
 """Thin async wrapper around Motor's GridFS bucket - upload/download/delete only."""
 
+import asyncio
+import contextlib
+
 from bson import ObjectId
 from gridfs.errors import NoFile
 
@@ -8,9 +11,17 @@ from app.core.database import get_gridfs
 
 async def upload_buffer(data: bytes, filename: str, content_type: str) -> ObjectId:
     gridfs = get_gridfs()
-    file_id = await gridfs.upload_from_stream(
-        filename, data, metadata={"contentType": content_type}
-    )
+    # GridFS does NOT abort a failed upload (it only marks the stream closed), so chunks already
+    # written would stay behind with no files row. Pre-generate the id to be able to sweep them.
+    file_id = ObjectId()
+    try:
+        await gridfs.upload_from_stream_with_id(
+            file_id, filename, data, metadata={"contentType": content_type}
+        )
+    except BaseException:
+        with contextlib.suppress(Exception):
+            await asyncio.shield(delete_file(file_id))  # removes chunks even without a files row
+        raise
     return file_id
 
 

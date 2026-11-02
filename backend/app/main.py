@@ -11,6 +11,7 @@ os.environ.setdefault("PADDLE_PDX_CPU_NUM_THREADS", "6")
 import asyncio
 import contextlib
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -113,6 +114,18 @@ app.add_middleware(
 )
 
 
+def _upload_part_message(request: Request, error: Any) -> str | None:
+    """A missing upload part names itself ("Part 1 is required.") instead of pydantic's text."""
+    loc = tuple(error.get("loc", ()))
+    if (
+        request.url.path == "/api/documents/upload"
+        and error.get("type") == "missing"
+        and loc in (("body", "part1"), ("body", "part2"))
+    ):
+        return f"Part {loc[1][-1]} is required."
+    return None
+
+
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(
     request: Request, exc: RequestValidationError
@@ -123,7 +136,7 @@ async def validation_exception_handler(
     errors = [
         {
             "loc": list(e.get("loc", ())),
-            "msg": e.get("msg", "Invalid value."),
+            "msg": _upload_part_message(request, e) or e.get("msg", "Invalid value."),
             "type": e.get("type"),
         }
         for e in exc.errors()

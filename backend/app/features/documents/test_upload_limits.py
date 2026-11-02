@@ -156,6 +156,8 @@ async def test_missing_part_is_422(client: TestClient) -> None:
         files={"part1": ("a.jpg", blob(50), "image/jpeg")},
     )
     assert r.status_code == 422
+    assert r.json()["detail"][0]["msg"] == "Part 2 is required."
+    assert set(r.json()["detail"][0]) == {"loc", "msg", "type"}
 
 
 # ------------------------------------------------------------------ hostile filenames
@@ -337,6 +339,10 @@ class _BrokenDb:
         async def insert_one(*_: Any, **__: Any) -> Any:
             raise RuntimeError("insert failed")
 
+        @staticmethod
+        async def find_one(*_: Any, **__: Any) -> Any:
+            return None  # the lost-ack lookup: no document exists, so the files are rolled back
+
 
 async def test_part2_store_failure_deletes_part1(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -385,6 +391,151 @@ async def test_failed_rollback_delete_records_orphans(
     assert await current_db().orphanedfiles.count_documents({}) == 2
 
 
+class _AckLostDb:
+    """Real db, but insert_one commits and then raises (the acknowledgement was lost)."""
+
+    def __init__(self, real: Any, lookup_fails: bool = False) -> None:
+        self.documents = self
+        self._real, self._lookup_fails = real.documents, lookup_fails
+
+    async def insert_one(self, doc: Any) -> Any:
+        await self._real.insert_one(doc)
+        raise RuntimeError("ack lost")
+
+    async def find_one(self, *a: Any, **k: Any) -> Any:
+        if self._lookup_fails:
+            raise RuntimeError("lookup down")
+        return await self._real.find_one(*a, **k)
+
+
+async def test_lost_insert_ack_keeps_files_and_succeeds(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.database import get_database
+    from app.features.documents import router as r_mod
+
+    monkeypatch.setattr(r_mod, "get_database", lambda: _AckLostDb(get_database()))
+    user = await make_user()
+    r = _upload(client, user, blob(100), blob(100))
+    assert r.status_code == 201
+    assert await _stored() == (1, 2)
+    doc = await current_db().documents.find_one({})
+    assert str(doc["_id"]) == r.json()["id"]
+
+
+async def test_lost_ack_and_failed_lookup_deletes_nothing_records_nothing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.database import get_database
+    from app.features.documents import router as r_mod
+
+    monkeypatch.setattr(
+        r_mod, "get_database", lambda: _AckLostDb(get_database(), lookup_fails=True)
+    )
+    user = await make_user()
+    r = _upload(client, user, blob(100), blob(100))
+    assert r.status_code == 500 and r.json()["detail"] == "Upload failed. Please try again."
+    assert await _stored() == (1, 2)
+    assert await current_db().orphanedfiles.count_documents({}) == 0
+
+
+async def test_cancellation_during_stores_rolls_back_then_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from bson import ObjectId
+
+    from app.features.documents import router as r_mod
+
+    deleted: list[ObjectId] = []
+    calls: list[int] = []
+
+    async def cancelling_upload(*_: Any) -> ObjectId:
+        calls.append(1)
+        if len(calls) == 2:
+            raise asyncio.CancelledError
+        return ObjectId()
+
+    async def fake_delete(file_id: ObjectId) -> None:
+        deleted.append(file_id)
+
+    monkeypatch.setattr(r_mod, "upload_buffer", cancelling_upload)
+    monkeypatch.setattr(r_mod, "delete_file", fake_delete)
+    monkeypatch.setattr(r_mod, "get_database", lambda: None)
+    with pytest.raises(asyncio.CancelledError):
+        await r_mod._store_upload(
+            ObjectId(), ("a.jpg", b"x", "image/jpeg"), ("b.jpg", b"y", "image/jpeg")
+        )
+    assert len(deleted) == 1
+
+
+async def test_failed_gridfs_write_sweeps_its_partial_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GridFS does not abort a half-written upload itself; upload_buffer must delete by id."""
+    from app.features.documents import gridfs_service as g
+
+    deleted: list[Any] = []
+
+    class _Bucket:
+        async def upload_from_stream_with_id(self, file_id: Any, *_: Any, **__: Any) -> None:
+            self.id = file_id
+            raise RuntimeError("write died mid-way")
+
+    async def fake_delete(file_id: Any) -> None:
+        deleted.append(file_id)
+
+    bucket = _Bucket()
+    monkeypatch.setattr(g, "get_gridfs", lambda: bucket)
+    monkeypatch.setattr(g, "delete_file", fake_delete)
+    with pytest.raises(RuntimeError):
+        await g.upload_buffer(b"x", "a.jpg", "image/jpeg")
+    assert deleted == [bucket.id]
+
+
+# ------------------------------------------------------------------ break-it (documenting)
+
+
+async def test_same_file_in_both_slots_is_accepted_as_two_separate_files(
+    client: TestClient,
+) -> None:
+    """Today's behaviour, no guard wanted: the same bytes in both slots store twice."""
+    user = await make_user()
+    data = blob(200)
+    r = _upload(client, user, data, data)
+    assert r.status_code == 201
+    doc = await current_db().documents.find_one({})
+    assert doc["part1GridFsFileId"] != doc["part2GridFsFileId"]
+    assert await _stored() == (1, 2)
+
+
+async def test_two_simultaneous_uploads_from_one_user_do_not_mix(client: TestClient) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    user = await make_user()
+    pairs = [(blob(100) + b"A1", blob(100) + b"A2"), (blob(100) + b"B1", blob(100) + b"B2")]
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda p: _upload(client, user, *p), pairs))
+    assert [r.status_code for r in results] == [201, 201]
+    docs = await current_db().documents.find({}).to_list(length=None)
+    assert len(docs) == 2
+    ids = {d["part1GridFsFileId"] for d in docs} | {d["part2GridFsFileId"] for d in docs}
+    assert len(ids) == 4
+    for d in docs:
+        for part in ("part1", "part2"):
+            dl = client.get(f"/api/documents/{d['_id']}/download/{part}", headers=user["headers"])
+            tail = dl.content[-2:]
+            assert tail[1:] == (b"1" if part == "part1" else b"2")
+            assert tail[:1] in (b"A", b"B")
+    # the two documents' parts come from the same pair, not crossed
+    for d in docs:
+        a = client.get(f"/api/documents/{d['_id']}/download/part1", headers=user["headers"])
+        b = client.get(f"/api/documents/{d['_id']}/download/part2", headers=user["headers"])
+        assert a.content[-2:-1] == b.content[-2:-1]
+
+
+# Last on purpose: its own TestClient contexts shut the app (and its db) down on exit.
 async def test_121st_upload_from_one_ip_is_429_other_ip_is_fine() -> None:
     user = await make_user()
     files = {"part1": ("a.jpg", b"", "image/jpeg"), "part2": ("b.jpg", blob(50), "image/jpeg")}

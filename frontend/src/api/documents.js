@@ -1,6 +1,6 @@
 import { client } from "./client";
 
-const UPLOAD_LIMIT_MESSAGE = "Too many uploads. Please wait a few minutes and try again.";
+const UPLOAD_LIMIT_MESSAGE = "Too many uploads. Please try again later.";
 function uploadLimitMessage(err) {
   if (err.response?.status === 429) err.userMessage = UPLOAD_LIMIT_MESSAGE;
   throw err;

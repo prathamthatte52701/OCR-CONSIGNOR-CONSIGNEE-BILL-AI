@@ -4,7 +4,9 @@ Per-user data isolation on every query - every filter includes userId, malformed
 400, other users' documents 404. Bulk age/date-range purge ("nuke") lives in
 app.features.admin.router - admin-only now, not user-facing."""
 
+import asyncio
 import io
+import logging
 import re
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -45,6 +47,7 @@ from app.features.documents.schemas import (
 from app.features.ocr.preprocessing import get_pdf_page_count
 
 IST = ZoneInfo("Asia/Kolkata")
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -178,6 +181,83 @@ async def _validate_part(label: str, data: bytes, mime: str | None) -> str:
     return mime
 
 
+async def _rollback_stored(stored: list[ObjectId], user_id: ObjectId) -> None:
+    """Deletes every file stored so far; a failed delete is recorded as an orphan. Never raises,
+    so one bad file cannot stop the others from being cleaned up."""
+    for file_id in stored:
+        try:
+            await delete_file(file_id)
+        except Exception as del_exc:  # noqa: BLE001
+            try:
+                await record_orphan(file_id, None, user_id, del_exc)
+            except Exception:  # noqa: BLE001 - never abort the rollback of the other file
+                pass
+
+
+async def _store_upload(
+    user_id: ObjectId, part1: tuple[str, bytes, str], part2: tuple[str, bytes, str]
+) -> ObjectId:
+    """Stores both files and the document row; returns the document id. On any failure every
+    stored file is deleted (also on cancellation, shielded) and a clean 500 is raised."""
+    (name1, bytes1, mime1), (name2, bytes2, mime2) = part1, part2
+    db = get_database()
+    stored: list[ObjectId] = []
+    try:
+        file1 = await upload_buffer(bytes1, name1, mime1)
+        stored.append(file1)
+        file2 = await upload_buffer(bytes2, name2, mime2)
+        stored.append(file2)
+        now = datetime.now(UTC)
+        result = await db.documents.insert_one(
+            {
+                "userId": user_id,
+                "uploadStatus": "processing",
+                "edited": False,
+                "hasLowConfidenceFields": False,
+                "multiPage": False,
+                "recoveryAttempts": 0,
+                "part1GridFsFileId": file1,
+                "part1OriginalFilename": name1,
+                "part1MimeType": mime1,
+                "part1Size": len(bytes1),
+                "part1FilePurged": False,
+                "part2GridFsFileId": file2,
+                "part2OriginalFilename": name2,
+                "part2MimeType": mime2,
+                "part2Size": len(bytes2),
+                "part2FilePurged": False,
+                "createdAt": now,
+                "updatedAt": now,
+            }
+        )
+        inserted_id: ObjectId = result.inserted_id
+        return inserted_id
+    except BaseException as exc:
+        if isinstance(exc, Exception) and len(stored) == 2:
+            # The insert may have committed and only its acknowledgement been lost: a document
+            # that already points at this file means the upload SUCCEEDED - deleting the files
+            # now would destroy a live record.
+            try:
+                found = await db.documents.find_one(
+                    {"userId": user_id, "part1GridFsFileId": stored[0]}, {"_id": 1}
+                )
+            except Exception as lookup_exc:  # noqa: BLE001
+                # Unknown outcome: delete nothing and record no orphans (a retry of an orphan
+                # could delete a live file). Leave the files for manual review.
+                logger.error("upload insert lookup failed: class=%s", type(lookup_exc).__name__)
+                raise HTTPException(
+                    status_code=500, detail="Upload failed. Please try again."
+                ) from None
+            if found is not None:
+                found_id: ObjectId = found["_id"]
+                return found_id
+        await asyncio.shield(_rollback_stored(stored, user_id))
+        if not isinstance(exc, Exception):
+            raise  # CancelledError etc. - cleaned up, now propagate
+        logger.error("upload failed, rolled back: class=%s", type(exc).__name__)
+        raise HTTPException(status_code=500, detail="Upload failed. Please try again.") from None
+
+
 @router.post("/upload", status_code=201, response_model=UploadResponse)
 @limiter.limit(UPLOAD_LIMIT)
 async def upload_document(
@@ -196,50 +276,11 @@ async def upload_document(
     part1_mime = await _validate_part("Part 1", part1_bytes, _sniff_mime_type(part1_bytes))
     part2_mime = await _validate_part("Part 2", part2_bytes, _sniff_mime_type(part2_bytes))
 
-    part1_name = safe_filename(part1.filename, "part1")
-    part2_name = safe_filename(part2.filename, "part2")
-    db = get_database()
-    stored: list[ObjectId] = []
-    try:
-        part1_file_id = await upload_buffer(part1_bytes, part1_name, part1_mime)
-        stored.append(part1_file_id)
-        part2_file_id = await upload_buffer(part2_bytes, part2_name, part2_mime)
-        stored.append(part2_file_id)
-
-        now = datetime.now(UTC)
-        result = await db.documents.insert_one(
-            {
-                "userId": current_user.id,
-                "uploadStatus": "processing",
-                "edited": False,
-                "hasLowConfidenceFields": False,
-                "multiPage": False,
-                "recoveryAttempts": 0,
-                "part1GridFsFileId": part1_file_id,
-                "part1OriginalFilename": part1_name,
-                "part1MimeType": part1_mime,
-                "part1Size": len(part1_bytes),
-                "part1FilePurged": False,
-                "part2GridFsFileId": part2_file_id,
-                "part2OriginalFilename": part2_name,
-                "part2MimeType": part2_mime,
-                "part2Size": len(part2_bytes),
-                "part2FilePurged": False,
-                "createdAt": now,
-                "updatedAt": now,
-            }
-        )
-    except Exception:  # noqa: BLE001 - roll back whatever was stored, then a clean error
-        for file_id in stored:
-            try:
-                await delete_file(file_id)
-            except Exception as del_exc:  # noqa: BLE001
-                try:
-                    await record_orphan(file_id, None, current_user.id, del_exc)
-                except Exception:  # noqa: BLE001 - never abort the rollback of the other file
-                    pass
-        raise HTTPException(status_code=500, detail="Upload failed. Please try again.") from None
-    doc_id = result.inserted_id
+    doc_id = await _store_upload(
+        current_user.id,
+        (safe_filename(part1.filename, "part1"), part1_bytes, part1_mime),
+        (safe_filename(part2.filename, "part2"), part2_bytes, part2_mime),
+    )
 
     background_tasks.add_task(
         _run_pipeline_and_update,

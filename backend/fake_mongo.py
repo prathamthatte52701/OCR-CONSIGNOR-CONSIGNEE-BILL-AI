@@ -583,12 +583,22 @@ class FakeGridFSBucket:
         self, filename: str, source: bytes, metadata: dict[str, Any] | None = None, **_: Any
     ) -> ObjectId:
         file_id = ObjectId()
+        await self.upload_from_stream_with_id(file_id, filename, source, metadata)
+        return file_id
+
+    async def upload_from_stream_with_id(
+        self,
+        file_id: ObjectId,
+        filename: str,
+        source: bytes,
+        metadata: dict[str, Any] | None = None,
+        **_: Any,
+    ) -> None:
         self._files[file_id] = (filename, bytes(source), dict(metadata or {}))
         # Mirror GridFS's own bookkeeping collection so tests can count stored files.
         STORE.docs(self._db_name, "fs.files").append(
             {"_id": file_id, "filename": filename, "length": len(source)}
         )
-        return file_id
 
     async def open_download_stream(self, file_id: ObjectId) -> _DownloadStream:
         if file_id not in self._files:
