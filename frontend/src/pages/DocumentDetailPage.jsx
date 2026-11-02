@@ -1,7 +1,16 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { RefreshCw, Trash2, FileX2, Download, AlertTriangle, Layers } from "lucide-react";
+import {
+  RefreshCw,
+  Trash2,
+  FileX2,
+  Download,
+  AlertTriangle,
+  Layers,
+} from "lucide-react";
 import { useDocument } from "../hooks/useDocumentsQueries";
+import { useDocumentFile } from "../hooks/useDocumentFile";
+import LazyDocumentViewer from "../components/LazyDocumentViewer";
 import {
   useCorrectField,
   useReprocessDocument,
@@ -82,6 +91,48 @@ function FieldGrid({ fields, doc, onSave, disabled }) {
 }
 
 // The page body, reusable with an explicit id (the bulk-upload review embeds it).
+const VIEWER_HEIGHT = "h-[56vh] min-h-[360px]";
+const boxClass = `grid place-items-center rounded-lg border border-border bg-bg px-4 text-center ${VIEWER_HEIGHT}`;
+
+// One original (Part 1 or Part 2): skeleton while loading, a Retry box on error, a plain note
+// when the file was removed, the viewer otherwise.
+function PartViewer({ id, part, label, doc }) {
+  const purged = Boolean(doc[`${part}FilePurged`]);
+  const file = useDocumentFile(id, part, !purged, doc[`${part}MimeType`]);
+  if (purged)
+    return (
+      <div className={boxClass}>
+        <p className="text-sm text-text-muted">Original file removed.</p>
+      </div>
+    );
+  if (file.isError)
+    return (
+      <div className={boxClass}>
+        <div>
+          <p className="mb-3 text-sm text-text-muted">
+            Could not load the original file.
+          </p>
+          <button
+            type="button"
+            onClick={() => file.refetch()}
+            className="rounded border border-border bg-surface-raised px-4 py-2 text-xs font-medium hover:bg-accent/10"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  if (!file.data)
+    return (
+      <div
+        className={`animate-pulse rounded-lg border border-border bg-surface-raised ${VIEWER_HEIGHT}`}
+      />
+    );
+  return (
+    <LazyDocumentViewer key={`${id}-${part}`} file={file.data} label={label} />
+  );
+}
+
 export function DocumentDetail({ id, embedded = false }) {
   const navigate = useNavigate();
   const { data: doc, isLoading } = useDocument(id);
@@ -92,14 +143,22 @@ export function DocumentDetail({ id, embedded = false }) {
   const confirm = useDialogStore((s) => s.confirm);
 
   if (isLoading) return <LoadingState message="Loading document..." />;
-  if (!doc) return <p className="text-sm text-text-muted">Document not found.</p>;
+  if (!doc)
+    return <p className="text-sm text-text-muted">Document not found.</p>;
 
-  const editable = doc.uploadStatus === "processed" || doc.uploadStatus === "failed";
-  const busy = doc.uploadStatus === "uploaded" || doc.uploadStatus === "processing";
+  const bothPurged = Boolean(doc.part1FilePurged && doc.part2FilePurged);
+  const editable =
+    doc.uploadStatus === "processed" || doc.uploadStatus === "failed";
+  const busy =
+    doc.uploadStatus === "uploaded" || doc.uploadStatus === "processing";
 
-  const saveField = (field, value) => correctField.mutateAsync({ field, value });
+  const saveField = (field, value) =>
+    correctField.mutateAsync({ field, value });
   const saveLineItem = (index, subfield, value) =>
-    correctField.mutateAsync({ field: `lineItems.${index}.${subfield}`, value });
+    correctField.mutateAsync({
+      field: `lineItems.${index}.${subfield}`,
+      value,
+    });
 
   const handleDownload = async (part) => {
     try {
@@ -118,7 +177,8 @@ export function DocumentDetail({ id, embedded = false }) {
   const handleReprocess = async () => {
     const ok = await confirm({
       title: "Reprocess this document?",
-      message: "This re-runs OCR + AI extraction on the original files and overwrites all current field values, including any manual corrections.",
+      message:
+        "This re-runs OCR + AI extraction on the original files and overwrites all current field values, including any manual corrections.",
       severity: "warning",
       confirmLabel: "Reprocess",
     });
@@ -128,7 +188,8 @@ export function DocumentDetail({ id, embedded = false }) {
   const handleDelete = async () => {
     const ok = await confirm({
       title: "Permanently delete this document?",
-      message: "This permanently removes the document record and its original files. There is no undo.",
+      message:
+        "This permanently removes the document record and its original files. There is no undo.",
       severity: "critical",
       confirmLabel: "Delete",
     });
@@ -138,7 +199,8 @@ export function DocumentDetail({ id, embedded = false }) {
   const handlePurgeFiles = async () => {
     const ok = await confirm({
       title: "Permanently delete original files?",
-      message: "This permanently removes the stored Part 1 and Part 2 files to save space. Extracted data and field values are NOT affected and remain fully editable. This cannot be undone.",
+      message:
+        "This permanently removes the stored Part 1 and Part 2 files to save space. Extracted data and field values are NOT affected and remain fully editable. This cannot be undone.",
       severity: "warning",
       confirmLabel: "File Delete",
     });
@@ -146,26 +208,35 @@ export function DocumentDetail({ id, embedded = false }) {
   };
 
   return (
-    <div className="max-w-4xl">
+    <div className={bothPurged ? "max-w-4xl" : "max-w-6xl"}>
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
         <div>
           {!embedded && (
-            <button onClick={() => navigate(-1)} className="text-xs text-text-muted hover:text-accent mb-1">
+            <button
+              onClick={() => navigate(-1)}
+              className="text-xs text-text-muted hover:text-accent mb-1"
+            >
               &larr; Back
             </button>
           )}
           <h1 className="text-xl font-semibold flex items-center gap-2">
             {doc.invoiceNo || "(no invoice no.)"}
-            {doc.hasLowConfidenceFields && <AlertTriangle size={16} className="text-warning" />}
+            {doc.hasLowConfidenceFields && (
+              <AlertTriangle size={16} className="text-warning" />
+            )}
             {doc.multiPage && <Layers size={16} className="text-text-muted" />}
           </h1>
           <p className="text-xs text-text-muted mt-1">
-            Status: <span className="font-medium">{doc.uploadStatus}</span> &middot; Uploaded{" "}
-            {formatIST(doc.createdAt)}
-            {doc.reprocessedAt && <> &middot; Reprocessed {formatIST(doc.reprocessedAt)}</>}
+            Status: <span className="font-medium">{doc.uploadStatus}</span>{" "}
+            &middot; Uploaded {formatIST(doc.createdAt)}
+            {doc.reprocessedAt && (
+              <> &middot; Reprocessed {formatIST(doc.reprocessedAt)}</>
+            )}
           </p>
           {doc.processingError && (
-            <p className="text-xs text-danger mt-1">Error: {doc.processingError}</p>
+            <p className="text-xs text-danger mt-1">
+              Error: {doc.processingError}
+            </p>
           )}
         </div>
 
@@ -178,9 +249,10 @@ export function DocumentDetail({ id, embedded = false }) {
                   onClick={() => handleDownload(part)}
                   className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-border hover:bg-surface-raised"
                 >
-                  <Download size={13} /> {part === "part1" ? "Part 1" : "Part 2"}
+                  <Download size={13} />{" "}
+                  {part === "part1" ? "Part 1" : "Part 2"}
                 </button>
-              )
+              ),
           )}
           <button
             onClick={handleReprocess}
@@ -205,69 +277,115 @@ export function DocumentDetail({ id, embedded = false }) {
         </div>
       </div>
 
-      {busy && <LoadingState message="Extracting fields - this page updates automatically..." />}
+      <div
+        className={bothPurged ? "" : "grid gap-6 lg:grid-cols-2 lg:items-start"}
+      >
+        <div className="min-w-0">
+          {busy && (
+            <LoadingState message="Extracting fields - this page updates automatically..." />
+          )}
 
-      {!busy && (
-        <div className="space-y-8">
-          <section>
-            <h2 className="text-sm font-semibold text-text-muted mb-3">Consignee</h2>
-            <FieldGrid fields={CONSIGNEE_FIELDS} doc={doc} onSave={saveField} disabled={!editable} />
-          </section>
+          {!busy && (
+            <div className="space-y-8">
+              <section>
+                <h2 className="text-sm font-semibold text-text-muted mb-3">
+                  Consignee
+                </h2>
+                <FieldGrid
+                  fields={CONSIGNEE_FIELDS}
+                  doc={doc}
+                  onSave={saveField}
+                  disabled={!editable}
+                />
+              </section>
 
-          <section>
-            <h2 className="text-sm font-semibold text-text-muted mb-3">Consignor</h2>
-            <FieldGrid fields={CONSIGNOR_FIELDS} doc={doc} onSave={saveField} disabled={!editable} />
-          </section>
+              <section>
+                <h2 className="text-sm font-semibold text-text-muted mb-3">
+                  Consignor
+                </h2>
+                <FieldGrid
+                  fields={CONSIGNOR_FIELDS}
+                  doc={doc}
+                  onSave={saveField}
+                  disabled={!editable}
+                />
+              </section>
 
-          <section>
-            <h2 className="text-sm font-semibold text-text-muted mb-3">Line Items</h2>
-            <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-surface-raised text-left text-xs text-text-muted">
-                    {LINE_ITEM_FIELDS.map(([key, label]) => (
-                      <th key={key} className="px-3 py-2 font-medium whitespace-nowrap">
-                        {label}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {(doc.lineItems || []).map((item, index) => (
-                    <tr key={index} className="border-t border-border">
-                      {LINE_ITEM_FIELDS.map(([key]) => (
-                        <td key={key} className="px-2 py-2 min-w-[120px]">
-                          <EditableField
-                            key={`${index}-${key}-${item[key]}`}
-                            label=""
-                            value={item[key]}
-                            confidence={item[`${key}Confidence`]}
-                            autoCorrected={item[`${key}AutoCorrected`]}
-                            disabled={!editable}
-                            onSave={(value) => saveLineItem(index, key, value)}
-                          />
-                        </td>
+              <section>
+                <h2 className="text-sm font-semibold text-text-muted mb-3">
+                  Line Items
+                </h2>
+                <div className="overflow-x-auto rounded-lg border border-border">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-surface-raised text-left text-xs text-text-muted">
+                        {LINE_ITEM_FIELDS.map(([key, label]) => (
+                          <th
+                            key={key}
+                            className="px-3 py-2 font-medium whitespace-nowrap"
+                          >
+                            {label}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(doc.lineItems || []).map((item, index) => (
+                        <tr key={index} className="border-t border-border">
+                          {LINE_ITEM_FIELDS.map(([key]) => (
+                            <td key={key} className="px-2 py-2 min-w-[120px]">
+                              <EditableField
+                                key={`${index}-${key}-${item[key]}`}
+                                label=""
+                                value={item[key]}
+                                confidence={item[`${key}Confidence`]}
+                                autoCorrected={item[`${key}AutoCorrected`]}
+                                disabled={!editable}
+                                onSave={(value) =>
+                                  saveLineItem(index, key, value)
+                                }
+                              />
+                            </td>
+                          ))}
+                        </tr>
                       ))}
-                    </tr>
-                  ))}
-                  {(doc.lineItems || []).length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="px-3 py-6 text-center text-text-muted text-sm">
-                        No line items extracted.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
+                      {(doc.lineItems || []).length === 0 && (
+                        <tr>
+                          <td
+                            colSpan={6}
+                            className="px-3 py-6 text-center text-text-muted text-sm"
+                          >
+                            No line items extracted.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
 
-          <section>
-            <h2 className="text-sm font-semibold text-text-muted mb-3">Tax Summary</h2>
-            <FieldGrid fields={SUMMARY_FIELDS} doc={doc} onSave={saveField} disabled={!editable} />
-          </section>
+              <section>
+                <h2 className="text-sm font-semibold text-text-muted mb-3">
+                  Tax Summary
+                </h2>
+                <FieldGrid
+                  fields={SUMMARY_FIELDS}
+                  doc={doc}
+                  onSave={saveField}
+                  disabled={!editable}
+                />
+              </section>
+            </div>
+          )}
         </div>
-      )}
+
+        {!bothPurged && (
+          <div className="min-w-0 space-y-6">
+            <PartViewer id={id} part="part1" label="Part 1" doc={doc} />
+            <PartViewer id={id} part="part2" label="Part 2" doc={doc} />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -11,6 +11,7 @@ function confidenceTone(confidence) {
 export default function EditableField({ label, value, confidence, autoCorrected, disabled, onSave }) {
   const [draft, setDraft] = useState(value ?? "");
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   // A ref, not just state: two Enters (or Enter + click) in the same tick both see the stale
   // `saving === false` from the render closure and would each send a request.
   const savingRef = useRef(false);
@@ -20,8 +21,12 @@ export default function EditableField({ label, value, confidence, autoCorrected,
     if (!dirty || savingRef.current) return;
     savingRef.current = true;
     setSaving(true);
+    setError("");
     try {
       await onSave(draft === "" ? null : draft);
+    } catch (err) {
+      // The field stays open with what the user typed; show why the server refused it.
+      setError(err?.userMessage || "Could not save.");
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -54,7 +59,10 @@ export default function EditableField({ label, value, confidence, autoCorrected,
         <input
           value={draft}
           disabled={disabled}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setError("");
+          }}
           onKeyDown={(e) => {
             // not while an IME is composing text, and not for an auto-repeating held key
             if (e.key === "Enter" && !e.nativeEvent.isComposing && !e.repeat) handleSave();
@@ -75,6 +83,11 @@ export default function EditableField({ label, value, confidence, autoCorrected,
           </button>
         )}
       </div>
+      {error && (
+        <p role="alert" className="mt-1 text-xs text-danger">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

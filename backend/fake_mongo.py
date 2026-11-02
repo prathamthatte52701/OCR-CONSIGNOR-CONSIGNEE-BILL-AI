@@ -146,8 +146,14 @@ def _set_path(doc: dict[str, Any], path: str, value: Any) -> None:
     parts = path.split(".")
     cur = doc
     for part in parts[:-1]:
-        cur = cur.setdefault(part, {})
-    cur[parts[-1]] = value
+        if isinstance(cur, list):  # real Mongo: "lineItems.0.x" addresses array element 0
+            cur = cur[int(part)]
+        else:
+            cur = cur.setdefault(part, {})
+    if isinstance(cur, list):
+        cur[int(parts[-1])] = value
+    else:
+        cur[parts[-1]] = value
 
 
 def _unset_path(doc: dict[str, Any], path: str) -> None:

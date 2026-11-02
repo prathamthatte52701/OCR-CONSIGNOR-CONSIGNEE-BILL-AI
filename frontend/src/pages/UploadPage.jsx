@@ -19,7 +19,7 @@ export default function UploadPage() {
   };
 
   return (
-    <div className={mode === "bulk" ? "max-w-4xl" : "max-w-2xl"}>
+    <div className={mode === "bulk" ? "max-w-6xl" : "max-w-2xl"}>
       <div className="flex gap-2 mb-4" role="tablist">
         {[
           ["single", "Single"],

@@ -41,6 +41,15 @@ async def apply_field_correction(
             status_code=409, detail="Cannot edit while the document is still processing."
         )
 
+    # Trim; an empty value is refused for every field except irnNo, where it clears the field.
+    text = value.strip() if value is not None else ""
+    if text:
+        value = text
+    elif field == "irnNo":
+        value = None
+    else:
+        raise HTTPException(status_code=400, detail="Please enter a value before saving.")
+
     now = datetime.now(UTC)
     line_item_match = _LINE_ITEM_FIELD_RE.match(field)
 
@@ -71,7 +80,15 @@ async def apply_field_correction(
 
     set_ops["edited"] = True
     set_ops["updatedAt"] = now
-    await db.documents.update_one({"_id": doc["_id"]}, {"$set": set_ops})
+    # Conditional on the document still being finished: a reprocess can start between the
+    # read above and this write. Nothing matched -> no write, no corrections row, no audit entry.
+    result = await db.documents.update_one(
+        {"_id": doc["_id"], "uploadStatus": {"$in": ["processed", "failed"]}}, {"$set": set_ops}
+    )
+    if result.matched_count == 0:
+        raise HTTPException(
+            status_code=409, detail="Cannot edit while the document is still processing."
+        )
     await db.corrections.insert_one(
         {
             "documentId": doc["_id"],
