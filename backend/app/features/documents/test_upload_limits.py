@@ -5,10 +5,13 @@ Uses tiny synthetic bytes (a JPEG magic number plus padding) - never a real docu
 OCR pipeline is replaced by a no-op."""
 
 import io
+import struct
 import zipfile
+import zlib
 from collections.abc import Iterator
 from typing import Any
 
+import fitz
 import pytest
 from fastapi.testclient import TestClient
 
@@ -63,12 +66,6 @@ async def test_small_valid_upload_is_accepted_and_stored(client: TestClient) -> 
     r = _upload(client, user, blob(100), blob(100, PNG))
     assert r.status_code == 201 and r.json()["uploadStatus"] == "processing"
     assert await _stored() == (1, 2)
-
-
-@pytest.mark.parametrize("magic", [JPEG, PNG, PDF])
-async def test_all_three_allowed_types_pass(client: TestClient, magic: bytes) -> None:
-    user = await make_user()
-    assert _upload(client, user, blob(64, magic), blob(64, magic)).status_code == 201
 
 
 async def test_files_of_exactly_the_maximum_size_are_accepted(client: TestClient) -> None:
@@ -216,3 +213,185 @@ async def test_zip_entries_cannot_escape_the_extraction_folder(client: TestClien
     for name in names:
         assert not name.startswith("/") and "\\" not in name and ".." not in name.split("/")
         assert name.count("/") == 1  # exactly folder/file, never deeper or higher
+
+
+# ------------------------------------------------------------------ ACKN upload rules (B1-B6)
+
+
+def real_pdf(pages: int = 1) -> bytes:
+    doc = fitz.open()
+    for _ in range(pages):
+        doc.new_page()
+    return bytes(doc.tobytes())
+
+
+def png_header(width: int, height: int) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        crc = struct.pack(">I", zlib.crc32(kind + data))
+        return struct.pack(">I", len(data)) + kind + data + crc
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    return PNG + chunk(b"IHDR", ihdr) + chunk(b"IDAT", b"x" * 8)
+
+
+def _pdf_with_mediabox(box: str) -> bytes:
+    return (
+        "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+        "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+        f"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[{box}]>>endobj\n"
+        "trailer<</Root 1 0 R>>\n%%EOF"
+    ).encode()
+
+
+def _pair(bad_part: int, good: bytes, bad: bytes) -> tuple[bytes, bytes]:
+    return (bad, good) if bad_part == 1 else (good, bad)
+
+
+@pytest.mark.parametrize("data", [blob(64, JPEG), blob(64, PNG), real_pdf()])
+async def test_pdf_and_images_pass(client: TestClient, data: bytes) -> None:
+    user = await make_user()
+    assert _upload(client, user, data, data).status_code == 201
+
+
+@pytest.mark.parametrize("bad_part", [1, 2])
+async def test_valid_part_plus_invalid_part_stores_nothing(
+    client: TestClient, bad_part: int
+) -> None:
+    user = await make_user()
+    r = _upload(client, user, *_pair(bad_part, blob(100), b"MZ" + b"0" * 50))
+    assert r.status_code == 400 and f"Part {bad_part}" in r.json()["detail"]
+    assert await _stored() == (0, 0)
+
+
+@pytest.mark.parametrize("bad_part", [1, 2])
+async def test_five_page_pdf_is_refused(client: TestClient, bad_part: int) -> None:
+    user = await make_user()
+    r = _upload(client, user, *_pair(bad_part, blob(100), real_pdf(5)))
+    assert r.status_code == 400
+    assert r.json()["detail"] == f"Part {bad_part}: PDF must be 4 pages or less."
+    assert await _stored() == (0, 0)
+
+
+async def test_four_page_pdf_is_accepted(client: TestClient) -> None:
+    user = await make_user()
+    assert _upload(client, user, real_pdf(4), blob(100)).status_code == 201
+
+
+async def test_unreadable_pdf_is_refused(client: TestClient) -> None:
+    user = await make_user()
+    r = _upload(client, user, blob(100), blob(100, PDF))
+    assert r.status_code == 400
+    assert r.json()["detail"] == (
+        "Part 2: Could not read this PDF. Please upload a valid PDF or convert it to JPG/PNG."
+    )
+    assert await _stored() == (0, 0)
+
+
+async def test_huge_pixel_image_is_refused(client: TestClient) -> None:
+    user = await make_user()
+    r = client.post(
+        "/api/documents/upload",
+        headers=user["headers"],
+        files={
+            "part1": ("a.png", png_header(14000, 14000), "image/png"),
+            "part2": ("b.jpg", blob(100), "image/jpeg"),
+        },
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"].startswith("Part 1: This image is too large")
+    assert await _stored() == (0, 0)
+
+
+async def test_huge_pdf_page_is_refused(client: TestClient) -> None:
+    user = await make_user()
+    r = _upload(client, user, blob(100), _pdf_with_mediabox("0 0 14400 14400"))
+    assert r.status_code == 400
+    assert r.json()["detail"].startswith("Part 2: This PDF page is too large")
+    assert await _stored() == (0, 0)
+
+
+async def test_every_validation_error_names_the_part(client: TestClient) -> None:
+    user = await make_user()
+    cases = [
+        (b"", blob(50)),
+        (blob(50), b"GIF89a" + b"0" * 50),
+        (real_pdf(5), blob(50)),
+        (blob(50), blob(50, PDF)),
+        (blob(MAX_FILE_SIZE + 1), blob(50)),
+        (blob(50), png_header(14000, 14000)),
+    ]
+    for p1, p2 in cases:
+        detail = _upload(client, user, p1, p2).json()["detail"]
+        assert "Part 1" in detail or "Part 2" in detail, detail
+
+
+async def test_413_message_says_each_file(client: TestClient) -> None:
+    user = await make_user()
+    big = blob(5 * 1024 * 1024 + 700_000)
+    assert "Each file" in _upload(client, user, big, big).json()["detail"]
+
+
+class _BrokenDb:
+    class documents:  # noqa: N801
+        @staticmethod
+        async def insert_one(*_: Any, **__: Any) -> Any:
+            raise RuntimeError("insert failed")
+
+
+async def test_part2_store_failure_deletes_part1(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.features.documents import router as r_mod
+
+    real_upload, calls = r_mod.upload_buffer, []
+
+    async def flaky(*a: Any, **k: Any) -> Any:
+        calls.append(1)
+        if len(calls) == 2:
+            raise RuntimeError("gridfs down")
+        return await real_upload(*a, **k)
+
+    monkeypatch.setattr(r_mod, "upload_buffer", flaky)
+    user = await make_user()
+    r = _upload(client, user, blob(100), blob(100))
+    assert r.status_code == 500 and r.json()["detail"] == "Upload failed. Please try again."
+    assert await _stored() == (0, 0)
+
+
+async def test_insert_failure_deletes_both_files(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.features.documents import router as r_mod
+
+    monkeypatch.setattr(r_mod, "get_database", lambda: _BrokenDb())
+    user = await make_user()
+    r = _upload(client, user, blob(100), blob(100))
+    assert r.status_code == 500 and r.json()["detail"] == "Upload failed. Please try again."
+    assert await current_db()["fs.files"].count_documents({}) == 0
+
+
+async def test_failed_rollback_delete_records_orphans(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.features.documents import router as r_mod
+
+    async def no_delete(_: Any) -> None:
+        raise RuntimeError("delete failed")
+
+    monkeypatch.setattr(r_mod, "get_database", lambda: _BrokenDb())
+    monkeypatch.setattr(r_mod, "delete_file", no_delete)
+    user = await make_user()
+    assert _upload(client, user, blob(100), blob(100)).status_code == 500
+    assert await current_db().orphanedfiles.count_documents({}) == 2
+
+
+async def test_121st_upload_from_one_ip_is_429_other_ip_is_fine() -> None:
+    user = await make_user()
+    files = {"part1": ("a.jpg", b"", "image/jpeg"), "part2": ("b.jpg", blob(50), "image/jpeg")}
+    url, h = "/api/documents/upload", user["headers"]
+    with TestClient(app, raise_server_exceptions=False, client=("10.0.0.1", 5000)) as c1:
+        for _ in range(120):
+            assert c1.post(url, headers=h, files=files).status_code == 400
+        assert c1.post(url, headers=h, files=files).status_code == 429
+    with TestClient(app, raise_server_exceptions=False, client=("10.0.0.2", 5000)) as c2:
+        assert c2.post(url, headers=h, files=files).status_code == 400

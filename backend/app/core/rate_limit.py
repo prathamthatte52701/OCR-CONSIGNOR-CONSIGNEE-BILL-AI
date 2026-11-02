@@ -9,6 +9,9 @@ from slowapi.util import get_remote_address
 
 limiter = Limiter(key_func=get_remote_address)
 
+# Uploads per IP (shared office IP, so well above one person's use; only blocks scripted spam).
+UPLOAD_LIMIT = "120/hour"
+
 _email_storage = MemoryStorage()
 _email_limiter = MovingWindowRateLimiter(_email_storage)
 _LOGIN_EMAIL_LIMIT = RateLimitItemPerMinute(20, 15)  # 20 requests per 15 minutes

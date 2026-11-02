@@ -1,11 +1,20 @@
 import { client } from "./client";
 
+const UPLOAD_LIMIT_MESSAGE = "Too many uploads. Please wait a few minutes and try again.";
+function uploadLimitMessage(err) {
+  if (err.response?.status === 429) err.userMessage = UPLOAD_LIMIT_MESSAGE;
+  throw err;
+}
+
 export const documentsApi = {
   upload: (part1File, part2File) => {
     const form = new FormData();
     form.append("part1", part1File);
     form.append("part2", part2File);
-    return client.post("/documents/upload", form).then((r) => r.data);
+    return client
+      .post("/documents/upload", form)
+      .then((r) => r.data)
+      .catch(uploadLimitMessage);
   },
   list: (params) => client.get("/documents", { params }).then((r) => r.data),
   stats: () => client.get("/documents/stats").then((r) => r.data),

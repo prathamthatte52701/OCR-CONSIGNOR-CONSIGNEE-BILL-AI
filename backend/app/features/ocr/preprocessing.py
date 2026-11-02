@@ -6,6 +6,7 @@ on real Part1/Part2 sample photographs (not flatbed scans).
 the full gated step set, Part 2 gets only the steps that were measured not to disturb
 PP-Structure's cell geometry (see PART_ALLOWED_STEPS)."""
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -43,7 +44,11 @@ def load_image_bytes(data: bytes) -> np.ndarray:
     return image
 
 
-def render_pdf_first_page(data: bytes, scale: float = 2.5) -> np.ndarray:
+PDF_RENDER_SCALE = 2.5  # core/image_limits.py duplicates this; test_image_limits asserts equality
+PDF_PARSE_TIMEOUT_SECONDS = 60
+
+
+def render_pdf_first_page(data: bytes, scale: float = PDF_RENDER_SCALE) -> np.ndarray:
     doc = fitz.open(stream=data, filetype="pdf")
     try:
         page = doc[0]
@@ -53,6 +58,23 @@ def render_pdf_first_page(data: bytes, scale: float = 2.5) -> np.ndarray:
     finally:
         doc.close()
     return load_image_bytes(img_bytes)
+
+
+def _pdf_page_count_sync(buffer: bytes) -> int | None:
+    try:
+        with fitz.open(stream=buffer, filetype="pdf") as doc:
+            return doc.page_count
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def get_pdf_page_count(buffer: bytes) -> int | None:
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(_pdf_page_count_sync, buffer), timeout=PDF_PARSE_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        return None
 
 
 def _blur_variance(gray: np.ndarray) -> float:

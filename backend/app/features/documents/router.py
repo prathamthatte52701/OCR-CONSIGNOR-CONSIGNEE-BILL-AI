@@ -12,15 +12,26 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from bson import ObjectId
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import Response
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.audit_log import log_action
 from app.core.database import get_database
 from app.core.filenames import attachment_header, safe_filename
+from app.core.image_limits import ImageTooLarge, check_upload
 from app.core.object_id import is_valid_object_id
 from app.core.orphaned_files import record_orphan
+from app.core.rate_limit import UPLOAD_LIMIT, limiter
 from app.features.auth.dependencies import CurrentUser, get_current_user
 from app.features.documents.correction_service import apply_field_correction
 from app.features.documents.gridfs_service import delete_file, download_buffer, upload_buffer
@@ -31,12 +42,14 @@ from app.features.documents.schemas import (
     StatsResponse,
     UploadResponse,
 )
+from app.features.ocr.preprocessing import get_pdf_page_count
 
 IST = ZoneInfo("Asia/Kolkata")
 
 router = APIRouter()
 
 MAX_FILE_SIZE = 5 * 1024 * 1024
+MAX_PDF_PAGES = 4
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "application/pdf"}
 _MAGIC_BYTES: dict[bytes, str] = {
     b"\xff\xd8\xff": "image/jpeg",
@@ -137,59 +150,95 @@ async def _read_capped(upload: UploadFile, label: str) -> bytes:
     return b"".join(chunks)
 
 
+async def _validate_part(label: str, data: bytes, mime: str | None) -> str:
+    """Every per-file rule for one part; raises HTTPException naming the part. Stores nothing."""
+    if not data:
+        raise HTTPException(status_code=400, detail=f"{label} file is empty.")
+    if mime not in ALLOWED_MIME_TYPES:
+        raise HTTPException(status_code=400, detail=f"{label} file type not supported.")
+    if mime == "application/pdf":
+        # Only the page COUNT is limited; the pipeline still reads page 1 only.
+        pages = await get_pdf_page_count(data)
+        if not pages:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{label}: Could not read this PDF. "
+                    "Please upload a valid PDF or convert it to JPG/PNG."
+                ),
+            )
+        if pages > MAX_PDF_PAGES:
+            raise HTTPException(
+                status_code=400, detail=f"{label}: PDF must be {MAX_PDF_PAGES} pages or less."
+            )
+    try:
+        await check_upload(data, mime)
+    except ImageTooLarge as exc:
+        raise HTTPException(status_code=400, detail=f"{label}: {exc}") from None
+    return mime
+
+
 @router.post("/upload", status_code=201, response_model=UploadResponse)
+@limiter.limit(UPLOAD_LIMIT)
 async def upload_document(
+    request: Request,
     background_tasks: BackgroundTasks,
     part1: UploadFile = File(...),
     part2: UploadFile = File(...),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> UploadResponse:
+    # Per-IP rate limited: every upload triggers OCR + LLM work.
     # The middleware in main.py already refused an oversized request by Content-Length and
-    # cuts a streamed one off; each file is ALSO capped here while it is being read, so one
-    # file can never be pulled fully into memory past the limit (Part 1 is checked before
-    # Part 2 is even read).
+    # cuts a streamed one off; each file is ALSO capped here while it is being read.
     part1_bytes = await _read_capped(part1, "Part 1")
     part2_bytes = await _read_capped(part2, "Part 2")
-    for label, data in (("Part 1", part1_bytes), ("Part 2", part2_bytes)):
-        if not data:
-            raise HTTPException(status_code=400, detail=f"{label} file is empty.")
-
-    part1_mime = _sniff_mime_type(part1_bytes)
-    part2_mime = _sniff_mime_type(part2_bytes)
-    if part1_mime not in ALLOWED_MIME_TYPES:
-        raise HTTPException(status_code=400, detail="Part 1 file type not supported.")
-    if part2_mime not in ALLOWED_MIME_TYPES:
-        raise HTTPException(status_code=400, detail="Part 2 file type not supported.")
+    # Both parts are fully validated BEFORE anything is stored.
+    part1_mime = await _validate_part("Part 1", part1_bytes, _sniff_mime_type(part1_bytes))
+    part2_mime = await _validate_part("Part 2", part2_bytes, _sniff_mime_type(part2_bytes))
 
     part1_name = safe_filename(part1.filename, "part1")
     part2_name = safe_filename(part2.filename, "part2")
     db = get_database()
-    part1_file_id = await upload_buffer(part1_bytes, part1_name, part1_mime)
-    part2_file_id = await upload_buffer(part2_bytes, part2_name, part2_mime)
+    stored: list[ObjectId] = []
+    try:
+        part1_file_id = await upload_buffer(part1_bytes, part1_name, part1_mime)
+        stored.append(part1_file_id)
+        part2_file_id = await upload_buffer(part2_bytes, part2_name, part2_mime)
+        stored.append(part2_file_id)
 
-    now = datetime.now(UTC)
-    result = await db.documents.insert_one(
-        {
-            "userId": current_user.id,
-            "uploadStatus": "processing",
-            "edited": False,
-            "hasLowConfidenceFields": False,
-            "multiPage": False,
-            "recoveryAttempts": 0,
-            "part1GridFsFileId": part1_file_id,
-            "part1OriginalFilename": part1_name,
-            "part1MimeType": part1_mime,
-            "part1Size": len(part1_bytes),
-            "part1FilePurged": False,
-            "part2GridFsFileId": part2_file_id,
-            "part2OriginalFilename": part2_name,
-            "part2MimeType": part2_mime,
-            "part2Size": len(part2_bytes),
-            "part2FilePurged": False,
-            "createdAt": now,
-            "updatedAt": now,
-        }
-    )
+        now = datetime.now(UTC)
+        result = await db.documents.insert_one(
+            {
+                "userId": current_user.id,
+                "uploadStatus": "processing",
+                "edited": False,
+                "hasLowConfidenceFields": False,
+                "multiPage": False,
+                "recoveryAttempts": 0,
+                "part1GridFsFileId": part1_file_id,
+                "part1OriginalFilename": part1_name,
+                "part1MimeType": part1_mime,
+                "part1Size": len(part1_bytes),
+                "part1FilePurged": False,
+                "part2GridFsFileId": part2_file_id,
+                "part2OriginalFilename": part2_name,
+                "part2MimeType": part2_mime,
+                "part2Size": len(part2_bytes),
+                "part2FilePurged": False,
+                "createdAt": now,
+                "updatedAt": now,
+            }
+        )
+    except Exception:  # noqa: BLE001 - roll back whatever was stored, then a clean error
+        for file_id in stored:
+            try:
+                await delete_file(file_id)
+            except Exception as del_exc:  # noqa: BLE001
+                try:
+                    await record_orphan(file_id, None, current_user.id, del_exc)
+                except Exception:  # noqa: BLE001 - never abort the rollback of the other file
+                    pass
+        raise HTTPException(status_code=500, detail="Upload failed. Please try again.") from None
     doc_id = result.inserted_id
 
     background_tasks.add_task(
