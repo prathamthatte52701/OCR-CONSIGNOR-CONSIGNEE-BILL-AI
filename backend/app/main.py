@@ -30,7 +30,7 @@ from app.core.upload_limit import BODY_TOO_BIG_DETAIL, UploadSizeLimitMiddleware
 from app.features.admin.router import router as admin_router
 from app.features.auth.router import router as auth_router
 from app.features.documents.recovery import recover_interrupted_documents
-from app.features.documents.router import MAX_FILE_SIZE
+from app.features.documents.router import MAX_BULK_SETS, MAX_FILE_SIZE
 from app.features.documents.router import router as documents_router
 
 configure_logging()
@@ -83,7 +83,10 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # ty
 _MULTIPART_OVERHEAD = 1024 * 1024
 app.add_middleware(
     UploadSizeLimitMiddleware,
-    limits={"/api/documents/upload": 2 * MAX_FILE_SIZE + _MULTIPART_OVERHEAD},
+    limits={
+        "/api/documents/upload": 2 * MAX_FILE_SIZE + _MULTIPART_OVERHEAD,
+        "/api/documents/bulk-upload": MAX_BULK_SETS * 2 * MAX_FILE_SIZE + _MULTIPART_OVERHEAD,
+    },
 )
 # Every auth request is a few short strings; cap the whole body so nobody can make the server
 # buffer megabytes of JSON on /login or /signup before validation even starts.

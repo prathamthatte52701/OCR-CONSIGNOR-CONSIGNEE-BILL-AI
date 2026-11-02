@@ -11,6 +11,8 @@ limiter = Limiter(key_func=get_remote_address)
 
 # Uploads per IP (shared office IP, so well above one person's use; only blocks scripted spam).
 UPLOAD_LIMIT = "120/hour"
+# Bulk uploads (up to 5 sets each), a separate budget from single uploads.
+BULK_UPLOAD_LIMIT = "30/hour"
 
 _email_storage = MemoryStorage()
 _email_limiter = MovingWindowRateLimiter(_email_storage)

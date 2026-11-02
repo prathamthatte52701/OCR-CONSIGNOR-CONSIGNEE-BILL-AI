@@ -16,6 +16,16 @@ export const documentsApi = {
       .then((r) => r.data)
       .catch(uploadLimitMessage);
   },
+  // sets: [{ part1: File, part2: File }] - appended once per set, in order (matched by position)
+  bulkUpload: (sets) => {
+    const form = new FormData();
+    sets.forEach((set) => form.append("part1", set.part1));
+    sets.forEach((set) => form.append("part2", set.part2));
+    return client
+      .post("/documents/bulk-upload", form)
+      .then((r) => r.data)
+      .catch(uploadLimitMessage);
+  },
   list: (params) => client.get("/documents", { params }).then((r) => r.data),
   stats: () => client.get("/documents/stats").then((r) => r.data),
   get: (id) => client.get(`/documents/${id}`).then((r) => r.data),

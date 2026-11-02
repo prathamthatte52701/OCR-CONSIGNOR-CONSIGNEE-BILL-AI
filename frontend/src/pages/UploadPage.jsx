@@ -2,10 +2,12 @@ import { useRef, useState } from "react";
 import { Loader2, AlertCircle } from "lucide-react";
 import { useUploadDocument } from "../hooks/useDocumentMutations";
 import UploadCard from "../components/UploadCard";
+import BulkUpload from "../components/BulkUpload";
 
 export default function UploadPage() {
   const [part1, setPart1] = useState(null);
   const [part2, setPart2] = useState(null);
+  const [mode, setMode] = useState("single"); // "single" | "bulk"
   const upload = useUploadDocument();
   const submitting = useRef(false); // isPending lags one render behind a fast double click
 
@@ -17,7 +19,30 @@ export default function UploadPage() {
   };
 
   return (
-    <div className="max-w-2xl">
+    <div className={mode === "bulk" ? "max-w-4xl" : "max-w-2xl"}>
+      <div className="flex gap-2 mb-4" role="tablist">
+        {[
+          ["single", "Single"],
+          ["bulk", "Bulk (up to 5 sets)"],
+        ].map(([value, text]) => (
+          <button
+            key={value}
+            type="button"
+            role="tab"
+            aria-selected={mode === value}
+            onClick={() => setMode(value)}
+            className={`rounded px-4 py-1.5 text-sm border ${
+              mode === value ? "border-accent text-accent bg-accent/10" : "border-border text-text-muted"
+            }`}
+          >
+            {text}
+          </button>
+        ))}
+      </div>
+      {mode === "bulk" ? (
+        <BulkUpload />
+      ) : (
+        <>
       <h1 className="text-xl font-semibold mb-1">Upload document</h1>
       <p className="text-sm text-text-muted mb-6">
         Upload Part 1 (consignee/consignor header) and Part 2 (line-items table) together for one
@@ -58,6 +83,8 @@ export default function UploadPage() {
           </div>
         )}
       </form>
+        </>
+      )}
     </div>
   );
 }

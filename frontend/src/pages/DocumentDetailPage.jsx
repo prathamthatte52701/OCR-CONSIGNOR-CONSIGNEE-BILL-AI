@@ -81,8 +81,8 @@ function FieldGrid({ fields, doc, onSave, disabled }) {
   );
 }
 
-export default function DocumentDetailPage() {
-  const { id } = useParams();
+// The page body, reusable with an explicit id (the bulk-upload review embeds it).
+export function DocumentDetail({ id }) {
   const navigate = useNavigate();
   const { data: doc, isLoading } = useDocument(id);
   const correctField = useCorrectField(id);
@@ -268,4 +268,9 @@ export default function DocumentDetailPage() {
       )}
     </div>
   );
+}
+
+export default function DocumentDetailPage() {
+  const { id } = useParams();
+  return <DocumentDetail key={id} id={id} />;
 }

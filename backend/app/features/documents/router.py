@@ -33,7 +33,7 @@ from app.core.filenames import attachment_header, safe_filename
 from app.core.image_limits import ImageTooLarge, check_upload
 from app.core.object_id import is_valid_object_id
 from app.core.orphaned_files import record_orphan
-from app.core.rate_limit import UPLOAD_LIMIT, limiter
+from app.core.rate_limit import BULK_UPLOAD_LIMIT, UPLOAD_LIMIT, limiter
 from app.features.auth.dependencies import CurrentUser, get_current_user
 from app.features.documents.correction_service import apply_field_correction
 from app.features.documents.gridfs_service import delete_file, download_buffer, upload_buffer
@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_FILE_SIZE = 5 * 1024 * 1024
+MAX_BULK_SETS = 5
 MAX_PDF_PAGES = 4
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "application/pdf"}
 _MAGIC_BYTES: dict[bytes, str] = {
@@ -293,6 +294,78 @@ async def upload_document(
     )
     await log_action(current_user.id, "document_uploaded", {"documentId": str(doc_id)})
     return UploadResponse(id=str(doc_id), upload_status="processing")
+
+
+_PipelineJob = tuple[ObjectId, bytes, str, bytes, str]
+
+
+async def _run_sequentially(jobs: list[_PipelineJob]) -> None:
+    """Reads the created sets strictly one after another; a crash on one set marks only that
+    document failed and the next set still runs."""
+    for doc_id, b1, m1, b2, m2 in jobs:
+        try:
+            await _run_pipeline_and_update(doc_id, b1, m1, b2, m2, is_reprocess=False)
+        except Exception as exc:  # noqa: BLE001 - never let one set stop the rest
+            logger.error("bulk set %s crashed the pipeline: class=%s", doc_id, type(exc).__name__)
+            try:
+                await get_database().documents.update_one(
+                    {"_id": doc_id},
+                    {
+                        "$set": {
+                            "uploadStatus": "failed",
+                            "processingError": type(exc).__name__,
+                            "updatedAt": datetime.now(UTC),
+                        }
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+
+@router.post("/bulk-upload", status_code=201)
+@limiter.limit(BULK_UPLOAD_LIMIT)
+async def bulk_upload_documents(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    part1: list[UploadFile] = File(default=[]),
+    part2: list[UploadFile] = File(default=[]),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Up to MAX_BULK_SETS sets (Part 1 + Part 2, matched by position). Each set is validated
+    and stored on its own - a bad set is reported and skipped, the others go through - and the
+    created sets are then read one after another in ONE background task."""
+    if not part1 and not part2:
+        raise HTTPException(status_code=400, detail="Please add at least one set.")
+    if len(part1) != len(part2):
+        raise HTTPException(status_code=400, detail="Each set needs both Part 1 and Part 2.")
+    if len(part1) > MAX_BULK_SETS:
+        raise HTTPException(
+            status_code=400, detail=f"You can upload at most {MAX_BULK_SETS} sets at once."
+        )
+
+    results: list[dict[str, Any]] = []
+    jobs: list[_PipelineJob] = []
+    for index, (file1, file2) in enumerate(zip(part1, part2, strict=True)):
+        try:
+            bytes1 = await _read_capped(file1, "Part 1")
+            bytes2 = await _read_capped(file2, "Part 2")
+            mime1 = await _validate_part("Part 1", bytes1, _sniff_mime_type(bytes1))
+            mime2 = await _validate_part("Part 2", bytes2, _sniff_mime_type(bytes2))
+            doc_id = await _store_upload(
+                current_user.id,
+                (safe_filename(file1.filename, "part1"), bytes1, mime1),
+                (safe_filename(file2.filename, "part2"), bytes2, mime2),
+            )
+        except HTTPException as exc:
+            results.append({"index": index, "error": f"Set {index + 1}, {exc.detail}"})
+            continue
+        jobs.append((doc_id, bytes1, mime1, bytes2, mime2))
+        results.append({"index": index, "id": str(doc_id)})
+        await log_action(current_user.id, "document_uploaded", {"documentId": str(doc_id)})
+
+    if jobs:
+        background_tasks.add_task(_run_sequentially, jobs)
+    return {"results": results}
 
 
 def _upload_range_start_utc(range_key: str, now: datetime) -> datetime:
