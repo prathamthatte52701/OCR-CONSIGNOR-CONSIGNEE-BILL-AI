@@ -38,6 +38,7 @@ from app.features.auth.dependencies import CurrentUser, get_current_user
 from app.features.documents.correction_service import apply_field_correction
 from app.features.documents.gridfs_service import delete_file, download_buffer, upload_buffer
 from app.features.documents.processing import run_full_pipeline
+from app.features.documents.review_warnings import review_warnings
 from app.features.documents.schemas import (
     CorrectRequest,
     DocumentListResponse,
@@ -534,7 +535,9 @@ async def get_document(
 ) -> dict[str, Any]:
     db = get_database()
     doc = await _get_owned_document(db, document_id, current_user.id)
-    return _serialize_document(doc)
+    serialized = _serialize_document(doc)
+    serialized["reviewWarnings"] = review_warnings(doc)  # computed on read, not stored
+    return serialized
 
 
 @router.get("/{document_id}/download/part1")

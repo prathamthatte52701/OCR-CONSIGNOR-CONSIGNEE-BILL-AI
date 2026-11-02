@@ -1,0 +1,165 @@
+"""Review warnings: pure function plus the GET route (computed on read, nothing stored)."""
+
+from collections.abc import Iterator
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.features.documents.review_warnings import review_warnings
+from app.main import app
+from testkit import make_document, make_user
+
+
+def doc(**fields: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {"uploadStatus": "processed", "lineItems": []}
+    base.update(fields)
+    return base
+
+
+def items(*amounts: Any) -> list[dict[str, Any]]:
+    return [{"amount": a} for a in amounts]
+
+
+def codes(d: dict[str, Any]) -> list[str]:
+    return [w["code"] for w in review_warnings(d)]
+
+
+# ---------------------------------------------------------------- line items vs total basic
+def test_sums_equal_no_warning() -> None:
+    assert codes(doc(totalBasicAmount="300.00", lineItems=items("100.00", "200.00"))) == []
+
+
+def test_sum_smaller_than_total_warns_with_both_figures() -> None:
+    (w,) = review_warnings(doc(totalBasicAmount="310.00", lineItems=items("100.00", "200.00")))
+    assert w["code"] == "line_items_total"
+    assert "300.00" in w["message"] and "310.00" in w["message"]
+
+
+def test_sum_larger_than_total_warns() -> None:
+    assert codes(doc(totalBasicAmount="250.00", lineItems=items("100.00", "200.00"))) == [
+        "line_items_total"
+    ]
+
+
+def test_difference_of_half_a_paisa_is_ignored() -> None:
+    assert codes(doc(totalBasicAmount="300.005", lineItems=items("100.00", "200.00"))) == []
+
+
+def test_unparseable_amount_skips_the_check() -> None:
+    assert codes(doc(totalBasicAmount="999.00", lineItems=items("100.00", "1O0.00"))) == []
+    assert codes(doc(totalBasicAmount="999.00", lineItems=items("100.00", None))) == []
+    assert codes(doc(totalBasicAmount="999.00", lineItems=items("nan"))) == []
+
+
+def test_no_line_items_or_no_total_no_warning() -> None:
+    assert codes(doc(totalBasicAmount="100.00")) == []
+    assert codes(doc(lineItems=items("100.00"))) == []
+    assert codes(doc(totalBasicAmount="not a number", lineItems=items("100.00"))) == []
+
+
+def test_commas_parse() -> None:
+    d = doc(totalBasicAmount="1,234.50", lineItems=items("1,000.00", "234.50"))
+    assert codes(d) == []
+
+
+# ---------------------------------------------------------------------------- grand total
+def test_grand_total_within_a_rupee_is_fine() -> None:
+    d = doc(
+        totalBasicAmount="1000.00",
+        cgstAmount="90.00",
+        sgstAmount="90.00",
+        cgstRate="9",
+        sgstRate="9",
+        totalAmount="1180.50",
+    )
+    assert codes(d) == []
+
+
+def test_grand_total_off_by_five_warns() -> None:
+    d = doc(
+        totalBasicAmount="1000.00",
+        cgstAmount="90.00",
+        sgstAmount="90.00",
+        totalAmount="1185.00",
+    )
+    (w,) = review_warnings(d)
+    assert w["code"] == "grand_total"
+    assert "1,180.00" in w["message"] and "1,185.00" in w["message"]
+
+
+def test_empty_tax_with_empty_or_zero_rate_counts_as_zero() -> None:
+    d = doc(totalBasicAmount="1000.00", totalAmount="1000.00", igstAmount="", igstRate="0")
+    assert codes(d) == []
+    d = doc(totalBasicAmount="1000.00", totalAmount="1000.00", cgstRate="0.00%")
+    assert codes(d) == []
+
+
+def test_empty_tax_amount_with_a_rate_skips_the_check() -> None:
+    d = doc(totalBasicAmount="1000.00", totalAmount="5000.00", cgstAmount=None, cgstRate="9")
+    assert codes(d) == []
+
+
+def test_igst_only_invoice() -> None:
+    ok = doc(totalBasicAmount="1000.00", igstAmount="180.00", igstRate="18", totalAmount="1180.00")
+    assert codes(ok) == []
+    bad = doc(totalBasicAmount="1000.00", igstAmount="180.00", igstRate="18", totalAmount="1200.00")
+    assert codes(bad) == ["grand_total"]
+
+
+def test_missing_basic_or_total_skips_grand_total() -> None:
+    assert codes(doc(igstAmount="180.00", totalAmount="1180.00")) == []
+    assert codes(doc(totalBasicAmount="1000.00", igstAmount="180.00")) == []
+
+
+# ------------------------------------------------------------------------- multi page, status
+def test_multi_page() -> None:
+    (w,) = review_warnings(doc(multiPage=True))
+    assert w["code"] == "multi_page" and "more than one page" in w["message"]
+    assert codes(doc(multiPage=False)) == []
+
+
+@pytest.mark.parametrize("status", ["processing", "failed", "uploaded"])
+def test_only_processed_documents_get_warnings(status: str) -> None:
+    d = doc(uploadStatus=status, multiPage=True, totalBasicAmount="9.00", lineItems=items("1.00"))
+    assert review_warnings(d) == []
+
+
+# ------------------------------------------------------------------------------------ route
+@pytest.fixture(scope="module")
+def client() -> Iterator[TestClient]:
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
+
+
+async def test_get_has_review_warnings_list_does_not_and_edit_clears_them(
+    client: TestClient,
+) -> None:
+    user = await make_user()
+    d = await make_document(
+        user["_id"],
+        totalBasicAmount="300.00",
+        multiPage=True,
+        lineItems=[{"amount": "100.00"}, {"amount": "150.00"}],
+    )
+    h = user["headers"]
+    got = client.get(f"/api/documents/{d['id']}", headers=h).json()
+    assert {w["code"] for w in got["reviewWarnings"]} == {"line_items_total", "multi_page"}
+    listed = client.get("/api/documents", headers=h).json()["items"]
+    assert listed and all("reviewWarnings" not in item for item in listed)
+
+    fix = client.patch(
+        f"/api/documents/{d['id']}/correct",
+        json={"field": "lineItems.1.amount", "value": "200.00"},
+        headers=h,
+    )
+    assert fix.status_code == 200
+    after = client.get(f"/api/documents/{d['id']}", headers=h).json()
+    assert [w["code"] for w in after["reviewWarnings"]] == ["multi_page"]
+
+
+async def test_document_without_issues_returns_an_empty_list(client: TestClient) -> None:
+    user = await make_user()
+    d = await make_document(user["_id"])
+    got = client.get(f"/api/documents/{d['id']}", headers=user["headers"]).json()
+    assert got["reviewWarnings"] == []

@@ -277,6 +277,20 @@ export function DocumentDetail({ id, embedded = false }) {
         </div>
       </div>
 
+      {doc.reviewWarnings?.length > 0 && (
+        <div
+          role="status"
+          className="mb-6 space-y-1.5 rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning"
+        >
+          {doc.reviewWarnings.map((w) => (
+            <p key={w.code} className="flex items-start gap-2">
+              <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+              <span>{w.message}</span>
+            </p>
+          ))}
+        </div>
+      )}
+
       <div
         className={bothPurged ? "" : "grid gap-6 lg:grid-cols-2 lg:items-start"}
       >

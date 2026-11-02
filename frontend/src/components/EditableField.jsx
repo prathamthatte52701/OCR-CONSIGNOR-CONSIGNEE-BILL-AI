@@ -16,6 +16,10 @@ export default function EditableField({ label, value, confidence, autoCorrected,
   // `saving === false` from the render closure and would each send a request.
   const savingRef = useRef(false);
   const dirty = draft !== (value ?? "");
+  // A value that was read but is not trusted (editing sets confidence to 100, which clears this).
+  const hasValue = value !== null && value !== undefined && value !== "";
+  const lowConfidence = hasValue && typeof confidence === "number" && confidence < 80;
+  const isCell = !label; // table cells stay tidy: outline + tooltip instead of a text line
 
   const handleSave = async () => {
     if (!dirty || savingRef.current) return;
@@ -68,9 +72,10 @@ export default function EditableField({ label, value, confidence, autoCorrected,
             if (e.key === "Enter" && !e.nativeEvent.isComposing && !e.repeat) handleSave();
           }}
           placeholder="Not extracted"
+          title={lowConfidence && isCell ? "Check against the original" : undefined}
           className={cn(
             "w-full rounded border bg-bg px-2.5 py-1.5 text-sm disabled:opacity-50",
-            dirty ? "border-accent" : "border-border"
+            dirty ? "border-accent" : lowConfidence && isCell ? "border-warning" : "border-border"
           )}
         />
         {dirty && (
@@ -83,6 +88,9 @@ export default function EditableField({ label, value, confidence, autoCorrected,
           </button>
         )}
       </div>
+      {lowConfidence && !isCell && (
+        <p className="mt-1 text-[11px] text-warning">Check against the original</p>
+      )}
       {error && (
         <p role="alert" className="mt-1 text-xs text-danger">
           {error}
