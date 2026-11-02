@@ -252,6 +252,18 @@ def _min_confidence(fields: dict[str, Any]) -> int | None:
     return min(values) if values else None
 
 
+def _line_item_confidences(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Line-item values for the DOCUMENT-level numbers (hasLowConfidenceFields, minConfidence).
+    The Sr No cell is only a row counter and its digits are often faint, so its confidence is
+    left out here; the cell itself keeps its stored value and confidence."""
+    return {
+        f"lineItem{i}.{k}": v
+        for i, item in enumerate(items)
+        for k, v in item.items()
+        if k != "srNoConfidence"
+    }
+
+
 async def run_full_pipeline(
     part1_bytes: bytes, part1_mime: str, part2_bytes: bytes, part2_mime: str
 ) -> dict[str, Any]:
@@ -271,9 +283,7 @@ async def run_full_pipeline(
     update.update(_apply_tba_cross_check(summary, update["lineItems"]))
     update["multiPage"] = bool(raw_part2.get("multiPage", False))
 
-    line_item_confidences = {
-        f"lineItem{i}.{k}": v for i, item in enumerate(update["lineItems"]) for k, v in item.items()
-    }
+    line_item_confidences = _line_item_confidences(update["lineItems"])
     update["hasLowConfidenceFields"] = _has_low_confidence(update) or _has_low_confidence(
         line_item_confidences
     )

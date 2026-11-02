@@ -1,3 +1,7 @@
+from typing import Any
+
+import pytest
+
 from app.features.documents.processing import (
     _apply_corrections,
     _apply_pincode_correction,
@@ -107,3 +111,113 @@ def test_format_net_leaves_correct_and_missing_values_alone() -> None:
         "consignorGstin": None,
     }
     assert net(good) == good
+
+
+# ------------------------------------------------- document-level flag: Sr No never counts
+def _raw_part1() -> dict[str, Any]:
+    return {
+        "consigneeCode": "1001",
+        "consignee": "ACME TRADERS",
+        "consigneeAddress": "12 Main Road Pune 411001",
+        "consigneeStateCode": "27",
+        "consigneeStateName": "MAHARASHTRA",
+        "consigneeGstin": "27AABCU9603R1ZM",
+        "consigneePan": "AABCU9603R",
+        "invoiceNo": "S5001234567",
+        "fiDoc": "1900001234",
+        "challanDate": "01.07.26",
+        "reason": "Sample return",
+        "consignorName": "GLOBAL SUPPLIES",
+        "consignorAddress": "5 Industrial Estate Mumbai 400001",
+        "consignorStateCode": "27",
+        "consignorStateName": "MAHARASHTRA",
+        "consignorPoNo": "4500001234",
+        "consignorGstin": "27AABCU9603R1ZM",
+        "consignorPan": "AABCU9603R",
+        "requestNo": "7000001234",
+        "irnNo": None,
+    }
+
+
+def _raw_item(sr: str | None = "1") -> dict[str, Any]:
+    return {
+        "srNo": sr,
+        "description": "Bolt M8",
+        "hsnSac": "7318",
+        "basic": "100.00",
+        "quantity": "2",
+        "amount": "200.00",
+    }
+
+
+def _raw_part2(items: list[dict[str, Any]]) -> dict[str, Any]:
+    basic = sum(
+        float(i["amount"].replace(",", "").replace("O", "0")) for i in items if i.get("amount")
+    )
+    # the printed total must equal the row sum, or the TBA cross-check rewrites it (55)
+    return {
+        "lineItems": items,
+        "cgstRate": "9.00",
+        "cgstAmount": "18.00",
+        "sgstRate": "9.00",
+        "sgstAmount": "18.00",
+        "igstRate": "0.00",
+        "igstAmount": "0.00",
+        "totalBasicAmount": f"{basic:,.2f}",
+        "totalAmount": f"{basic * 1.18:,.2f}",
+        "multiPage": False,
+    }
+
+
+async def _run(monkeypatch: pytest.MonkeyPatch, items: list[dict[str, Any]]) -> dict[str, Any]:
+    from app.features.documents import processing
+
+    async def part1(*_: Any) -> dict[str, Any]:
+        return _raw_part1()
+
+    async def part2(*_: Any) -> dict[str, Any]:
+        return _raw_part2(items)
+
+    monkeypatch.setattr(processing, "process_part1", part1)
+    monkeypatch.setattr(processing, "process_part2", part2)
+    return await processing.run_full_pipeline(b"a", "image/jpeg", b"b", "image/jpeg")
+
+
+async def test_exact_fields_with_every_srno_unread_are_not_flagged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out = await _run(monkeypatch, [_raw_item(None), _raw_item(None)])
+    assert out["hasLowConfidenceFields"] is False
+    assert out["minConfidence"] not in (0, None)
+    assert out["lineItems"][0]["srNoConfidence"] == 0  # the cell itself keeps its confidence
+
+
+async def test_srno_with_a_stray_character_is_not_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    out = await _run(monkeypatch, [_raw_item("1|x"), _raw_item("2")])
+    assert out["lineItems"][0]["srNoConfidence"] == 20
+    assert out["hasLowConfidenceFields"] is False
+
+
+async def test_a_repaired_amount_is_still_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    item = _raw_item(None)
+    item["amount"] = "2OO.00"  # letter O repaired to zero -> confidence 55
+    out = await _run(monkeypatch, [item])
+    assert out["lineItems"][0]["amountConfidence"] == 55
+    assert out["hasLowConfidenceFields"] is True
+
+
+async def test_an_empty_quantity_is_still_flagged(monkeypatch: pytest.MonkeyPatch) -> None:
+    item = _raw_item(None)
+    item["quantity"] = None
+    item["amount"] = "200.00"
+    out = await _run(monkeypatch, [item])
+    assert out["lineItems"][0]["quantityConfidence"] == 0
+    assert out["hasLowConfidenceFields"] is True
+
+
+def test_line_item_confidences_skip_srno_only() -> None:
+    from app.features.documents.processing import _line_item_confidences
+
+    got = _line_item_confidences([{"srNoConfidence": 0, "amountConfidence": 55, "srNo": None}])
+    assert "lineItem0.srNoConfidence" not in got
+    assert got["lineItem0.amountConfidence"] == 55
