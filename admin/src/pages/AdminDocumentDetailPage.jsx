@@ -16,6 +16,13 @@ const DISPLAY_FIELDS = [
   "totalBasicAmount", "totalAmount",
 ];
 
+// Shows the server message; a warning when the file cleanup failed.
+function notifyCleanup(data, fallback) {
+  const message = data?.message || fallback;
+  if (data?.gridFsCleanupFailed) toast.warning(message);
+  else toast.success(message);
+}
+
 export default function AdminDocumentDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -58,8 +65,8 @@ export default function AdminDocumentDetailPage() {
 
   const handleDelete = async () => {
     try {
-      await adminApi.deleteDocument(id);
-      toast.success("Document permanently deleted.");
+      const data = await adminApi.deleteDocument(id);
+      notifyCleanup(data, "Document permanently deleted.");
       navigate("/documents");
     } catch (err) {
       toast.error(err.userMessage || "Could not delete.");
@@ -69,8 +76,8 @@ export default function AdminDocumentDetailPage() {
 
   const handlePurge = async () => {
     try {
-      await adminApi.purgeDocumentFiles(id);
-      toast.success("Files deleted. Data preserved.");
+      const data = await adminApi.purgeDocumentFiles(id);
+      notifyCleanup(data, "Files deleted. Data preserved.");
       setDoc((d) => ({ ...d, part1FilePurged: true, part2FilePurged: true }));
     } catch (err) {
       toast.error(err.userMessage || "Could not delete files.");

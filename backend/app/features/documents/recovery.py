@@ -56,7 +56,12 @@ async def _audit(
 
 async def _fail(db: AsyncIOMotorDatabase, doc: dict[str, Any], error: str, reason: str) -> None:
     await db.documents.update_one(
-        {"_id": doc["_id"], "uploadStatus": "processing"},
+        # processingRunId: a late fail must never overwrite a document reprocessed meanwhile
+        {
+            "_id": doc["_id"],
+            "uploadStatus": "processing",
+            "processingRunId": doc.get("processingRunId"),
+        },
         {
             "$set": {
                 "uploadStatus": "failed",

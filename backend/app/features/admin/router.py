@@ -33,6 +33,14 @@ from app.features.auth.dependencies import (
     require_admin,
 )
 from app.features.documents.correction_service import apply_field_correction
+from app.features.documents.file_purge import (
+    DELETE_FAILED_MESSAGE,
+    DELETE_OK_MESSAGE,
+    PURGE_FAILED_MESSAGE,
+    PURGE_OK_MESSAGE,
+    best_effort_purge_files,
+    purge_parts,
+)
 from app.features.documents.gridfs_service import delete_file, download_buffer
 from app.features.documents.schemas import CorrectRequest
 
@@ -86,16 +94,6 @@ def _serialize_orphan(record: dict[str, Any]) -> dict[str, Any]:
     result["documentId"] = str(result["documentId"]) if result.get("documentId") else None
     result["userId"] = str(result["userId"]) if result.get("userId") else None
     return result
-
-
-async def _best_effort_purge_files(doc: dict[str, Any]) -> None:
-    for key in ("part1GridFsFileId", "part2GridFsFileId"):
-        file_id = doc.get(key)
-        if file_id:
-            try:
-                await delete_file(file_id)
-            except Exception as exc:  # noqa: BLE001 - best-effort, never blocks the delete
-                await record_orphan(file_id, doc.get("_id"), doc.get("userId"), exc)
 
 
 def _build_range_filter(
@@ -157,7 +155,7 @@ async def _enforce_nuke_rate_limit(db: AsyncIOMotorDatabase, admin_id: ObjectId)
 async def _nuke_documents(db: AsyncIOMotorDatabase, query: dict[str, Any]) -> int:
     docs = await db.documents.find(query).to_list(length=None)
     for doc in docs:
-        await _best_effort_purge_files(doc)
+        await best_effort_purge_files(doc)
     doc_ids = [doc["_id"] for doc in docs]
     result = await db.documents.delete_many(query)
     if doc_ids:
@@ -329,7 +327,7 @@ async def delete_user(
 
     docs = await db.documents.find({"userId": target_id}).to_list(length=None)
     for doc in docs:
-        await _best_effort_purge_files(doc)
+        await best_effort_purge_files(doc)
     await db.documents.delete_many({"userId": target_id})
     await db.corrections.delete_many({"userId": target_id})
     await db.auditlogs.delete_many({"userId": target_id})
@@ -557,55 +555,38 @@ async def admin_correct_document(
 @router.delete("/documents/{document_id}")
 async def admin_delete_document(
     document_id: str, current_user: CurrentUser = Depends(require_admin)
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Permanently deletes the document record and its original files - see
     documents/router.py's delete_document for the file-deletion-never-blocks-record-removal
     rationale, identical here."""
     db = get_database()
     doc = await _get_any_document(document_id)
-    await _best_effort_purge_files(doc)
+    cleanup_failed = await best_effort_purge_files(doc)
     await db.documents.delete_one({"_id": doc["_id"]})
     await db.corrections.delete_many({"documentId": doc["_id"]})
     await log_action(
         current_user.id, "document_deleted", {"documentId": document_id, "byAdmin": True}
     )
-    return {"message": "Document permanently deleted."}
+    message = DELETE_FAILED_MESSAGE if cleanup_failed else DELETE_OK_MESSAGE
+    return {"message": message, "gridFsCleanupFailed": cleanup_failed}
 
 
 @router.post("/documents/{document_id}/purge-files")
 async def admin_purge_document_files(
     document_id: str, current_user: CurrentUser = Depends(require_admin)
-) -> dict[str, str]:
+) -> dict[str, Any]:
     db = get_database()
     doc = await _get_any_document(document_id)
-    now = datetime.now(UTC)
-    updates: dict[str, Any] = {}
-
-    if doc.get("part1GridFsFileId") and not doc.get("part1FilePurged"):
-        try:
-            await delete_file(doc["part1GridFsFileId"])
-        except Exception as exc:  # noqa: BLE001 - tracked, then re-raised unchanged
-            await record_orphan(doc["part1GridFsFileId"], doc["_id"], doc.get("userId"), exc)
-            raise
-        updates["part1FilePurged"] = True
-        updates["part1FilePurgedAt"] = now
-    if doc.get("part2GridFsFileId") and not doc.get("part2FilePurged"):
-        try:
-            await delete_file(doc["part2GridFsFileId"])
-        except Exception as exc:  # noqa: BLE001 - tracked, then re-raised unchanged
-            await record_orphan(doc["part2GridFsFileId"], doc["_id"], doc.get("userId"), exc)
-            raise
-        updates["part2FilePurged"] = True
-        updates["part2FilePurgedAt"] = now
-
+    updates, cleanup_failed = await purge_parts(doc, datetime.now(UTC))
     if updates:
-        updates["updatedAt"] = now
+        updates["updatedAt"] = datetime.now(UTC)
         await db.documents.update_one({"_id": doc["_id"]}, {"$set": updates})
 
     await log_action(
         current_user.id, "document_file_purged", {"documentId": document_id, "byAdmin": True}
     )
-    return {"message": "Original files purged. Extracted data was preserved."}
+    message = PURGE_FAILED_MESSAGE if cleanup_failed else PURGE_OK_MESSAGE
+    return {"message": message, "gridFsCleanupFailed": cleanup_failed}
 
 
 @router.get("/logs", response_model=ListResponse)

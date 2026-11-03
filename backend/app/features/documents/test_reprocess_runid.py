@@ -270,7 +270,7 @@ async def test_purge_part2_failure_still_purges_both_and_records_one_orphan(
             raise RuntimeError("gridfs down")
         await real(file_id)
 
-    monkeypatch.setattr(r_mod, "delete_file", flaky)
+    monkeypatch.setattr("app.features.documents.file_purge.delete_file", flaky)
     with TestClient(app, raise_server_exceptions=False) as client:
         r = _purge(client, user, doc)
         body = r.json()
@@ -294,7 +294,7 @@ async def test_purge_skips_an_already_purged_part(monkeypatch: pytest.MonkeyPatc
     async def spy(file_id: ObjectId) -> None:
         calls.append(file_id)
 
-    monkeypatch.setattr(r_mod, "delete_file", spy)
+    monkeypatch.setattr("app.features.documents.file_purge.delete_file", spy)
     with TestClient(app, raise_server_exceptions=False) as client:
         assert _purge(client, user, doc).status_code == 200
     assert calls == [doc["part2GridFsFileId"]]
@@ -311,7 +311,7 @@ async def test_delete_reports_cleanup_failure(monkeypatch: pytest.MonkeyPatch, f
         raise RuntimeError("gridfs down")
 
     if fail:
-        monkeypatch.setattr(r_mod, "delete_file", broken)
+        monkeypatch.setattr("app.features.documents.file_purge.delete_file", broken)
     user = await make_user()
     doc = await make_document(user["_id"])
     with TestClient(app, raise_server_exceptions=False) as client:

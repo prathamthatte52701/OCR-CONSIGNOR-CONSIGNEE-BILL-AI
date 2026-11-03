@@ -278,6 +278,10 @@ async def test_ocr_calls_of_concurrent_jobs_never_overlap_and_a_crash_does_not_b
 
     class _Docs:
         @staticmethod
+        async def find_one(*_: Any, **__: Any) -> dict[str, Any]:
+            return {"_id": 1}  # the job is current, so it starts
+
+        @staticmethod
         async def update_one(*_: Any, **__: Any) -> Any:
             return type("R", (), {"matched_count": 1})()
 

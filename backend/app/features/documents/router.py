@@ -37,6 +37,14 @@ from app.core.orphaned_files import record_orphan
 from app.core.rate_limit import BULK_UPLOAD_LIMIT, UPLOAD_LIMIT, limiter
 from app.features.auth.dependencies import CurrentUser, get_current_user
 from app.features.documents.correction_service import apply_field_correction
+from app.features.documents.file_purge import (
+    DELETE_FAILED_MESSAGE,
+    DELETE_OK_MESSAGE,
+    PURGE_FAILED_MESSAGE,
+    PURGE_OK_MESSAGE,
+    best_effort_purge_files,
+    purge_parts,
+)
 from app.features.documents.gridfs_service import delete_file, download_buffer, upload_buffer
 from app.features.documents.processing import run_full_pipeline
 from app.features.documents.review_warnings import review_warnings
@@ -98,20 +106,6 @@ async def _get_owned_document(
     return doc
 
 
-async def _best_effort_purge_files(doc: dict[str, Any]) -> bool:
-    """Deletes both stored files; never raises. Returns True when any delete failed."""
-    failed = False
-    for key in ("part1GridFsFileId", "part2GridFsFileId"):
-        file_id = doc.get(key)
-        if file_id:
-            try:
-                await delete_file(file_id)
-            except Exception as exc:  # noqa: BLE001 - best-effort, never blocks the delete
-                failed = True
-                await record_orphan(file_id, doc.get("_id"), doc.get("userId"), exc)
-    return failed
-
-
 async def _run_pipeline_and_update(
     doc_id: ObjectId,
     part1_bytes: bytes,
@@ -126,6 +120,12 @@ async def _run_pipeline_and_update(
     # Only the job holding the document's CURRENT run id may write; None matches a document
     # that has no processingRunId at all (older rows).
     run_filter = {"_id": doc_id, "processingRunId": run_id}
+    # Skip a job that went stale while queued (deleted / reprocessed) before it takes the OCR
+    # slot. Known limit: a job already WAITING for the slot inside the pipeline is not
+    # re-checked; only the start of a job is.
+    if await db.documents.find_one(run_filter, {"_id": 1}) is None:
+        logger.info("stale run skipped before start: document %s", doc_id)
+        return
     try:
         # One OCR reader at a time is enforced INSIDE the pipeline (ocr/ocr_slot.py), around the
         # two heavy engine calls only; a waiting job simply stays "processing".
@@ -140,7 +140,7 @@ async def _run_pipeline_and_update(
             update["edited"] = False
         written = await db.documents.update_one(run_filter, {"$set": update})
         if written.matched_count == 0:
-            logger.info("stale run ignored")
+            logger.info("stale run ignored: document %s", doc_id)
     except Exception as exc:  # noqa: BLE001 - pipeline failure must not crash the background task
         failed = await db.documents.update_one(
             run_filter,
@@ -155,7 +155,7 @@ async def _run_pipeline_and_update(
             },
         )
         if failed.matched_count == 0:
-            logger.info("stale run ignored")
+            logger.info("stale run ignored: document %s", doc_id)
 
 
 _READ_CHUNK = 64 * 1024
@@ -674,21 +674,16 @@ async def delete_document(
     document_id: str, current_user: CurrentUser = Depends(get_current_user)
 ) -> dict[str, Any]:
     """Permanently deletes the document record and its original files. File deletion is
-    best-effort (tracked via app.core.orphaned_files on failure, see _best_effort_purge_files)
+    best-effort (orphans are tracked on failure, see file_purge.best_effort_purge_files)
     and never blocks the record removal - a GridFS outage must not leave a document the user
     asked to delete still visible to them."""
     db = get_database()
     doc = await _get_owned_document(db, document_id, current_user.id)
-    cleanup_failed = await _best_effort_purge_files(doc)
+    cleanup_failed = await best_effort_purge_files(doc)
     await db.documents.delete_one({"_id": doc["_id"]})
     await db.corrections.delete_many({"documentId": doc["_id"]})
     await log_action(current_user.id, "document_deleted", {"documentId": document_id})
-    message = (
-        "Document permanently deleted, but we couldn't fully clean up its stored files. "
-        "This has been flagged for admin review - no action needed from you."
-        if cleanup_failed
-        else "Document permanently deleted."
-    )
+    message = DELETE_FAILED_MESSAGE if cleanup_failed else DELETE_OK_MESSAGE
     return {"message": message, "gridFsCleanupFailed": cleanup_failed}
 
 
@@ -701,32 +696,12 @@ async def purge_document_files(
     db = get_database()
     doc = await _get_owned_document(db, document_id, current_user.id)
     now = datetime.now(UTC)
-    updates: dict[str, Any] = {}
-    cleanup_failed = False
-
-    for part in ("part1", "part2"):
-        if doc.get(f"{part}FilePurged"):
-            continue
-        file_id = doc.get(f"{part}GridFsFileId")
-        if file_id:
-            try:
-                await delete_file(file_id)
-            except Exception as exc:  # noqa: BLE001 - tracked as an orphan, never blocks
-                cleanup_failed = True
-                await record_orphan(file_id, doc["_id"], doc.get("userId"), exc)
-        updates[f"{part}FilePurged"] = True
-        updates[f"{part}FilePurgedAt"] = now
-        updates[f"{part}GridFsFileId"] = None
+    updates, cleanup_failed = await purge_parts(doc, now)
 
     if updates:
         updates["updatedAt"] = now
         await db.documents.update_one({"_id": doc["_id"]}, {"$set": updates})
 
     await log_action(current_user.id, "document_file_purged", {"documentId": document_id})
-    message = (
-        "The original files were removed from the document, but we couldn't fully clean up the "
-        "stored data. This has been flagged for admin review - no action needed from you."
-        if cleanup_failed
-        else "Original files purged. Extracted data was preserved."
-    )
+    message = PURGE_FAILED_MESSAGE if cleanup_failed else PURGE_OK_MESSAGE
     return {"message": message, "gridFsCleanupFailed": cleanup_failed}

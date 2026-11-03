@@ -229,14 +229,13 @@ async def _cleanup_seeded_orphans(db: AsyncIOMotorDatabase) -> AsyncIterator[Non
 async def test_purge_files_endpoint_records_orphan_and_still_purges(
     db: AsyncIOMotorDatabase, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.features.documents.router as documents_router
 
     fake_file_id = ObjectId()
 
     async def _always_fail(file_id: ObjectId) -> None:
         raise RuntimeError("simulated GridFS outage")
 
-    monkeypatch.setattr(documents_router, "delete_file", _always_fail)
+    monkeypatch.setattr("app.features.documents.file_purge.delete_file", _always_fail)
 
     result = await db.documents.insert_one(
         _seed(
@@ -266,14 +265,13 @@ async def test_purge_files_endpoint_records_orphan_and_still_purges(
 async def test_delete_endpoint_still_succeeds_when_gridfs_fails(
     db: AsyncIOMotorDatabase, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.features.documents.router as documents_router
 
     fake_file_id = ObjectId()
 
     async def _always_fail(file_id: ObjectId) -> None:
         raise RuntimeError("simulated GridFS outage")
 
-    monkeypatch.setattr(documents_router, "delete_file", _always_fail)
+    monkeypatch.setattr("app.features.documents.file_purge.delete_file", _always_fail)
 
     result = await db.documents.insert_one(
         _seed(datetime.now(UTC), invoiceNo="DELETE-FAIL", part1GridFsFileId=fake_file_id)

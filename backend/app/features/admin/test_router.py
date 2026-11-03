@@ -83,15 +83,14 @@ def _seed_doc(user_id: ObjectId, **overrides: object) -> dict[str, Any]:
     return doc
 
 
-async def test_admin_purge_files_endpoint_records_orphan_and_propagates_failure(
+async def test_admin_purge_files_endpoint_records_orphan_and_still_purges(
     db: AsyncIOMotorDatabase, client: TestClient, monkeypatch: pytest.MonkeyPatch, _cleanup: list
 ) -> None:
-    import app.features.admin.router as admin_router
 
     async def _always_fail(file_id: ObjectId) -> None:
         raise RuntimeError("simulated GridFS outage (admin)")
 
-    monkeypatch.setattr(admin_router, "delete_file", _always_fail)
+    monkeypatch.setattr("app.features.documents.file_purge.delete_file", _always_fail)
 
     target_user = await db.users.insert_one(_seed_user())
     _cleanup.append(target_user.inserted_id)
@@ -102,11 +101,12 @@ async def test_admin_purge_files_endpoint_records_orphan_and_propagates_failure(
     doc_id = result.inserted_id
 
     resp = client.post(f"/api/admin/documents/{doc_id}/purge-files")
-    assert resp.status_code == 500
+    # shared purge: a failed delete never blocks - orphan recorded, part still marked purged
+    assert resp.status_code == 200 and resp.json()["gridFsCleanupFailed"] is True
 
     doc = await db.documents.find_one({"_id": doc_id})
     assert doc is not None
-    assert doc.get("part1FilePurged") is not True
+    assert doc.get("part1FilePurged") is True and doc.get("part1GridFsFileId") is None
 
     orphan = await db.orphanedfiles.find_one({"fileId": fake_file_id})
     assert orphan is not None
@@ -117,12 +117,11 @@ async def test_admin_purge_files_endpoint_records_orphan_and_propagates_failure(
 async def test_admin_delete_user_records_one_orphan_per_failing_file(
     db: AsyncIOMotorDatabase, client: TestClient, monkeypatch: pytest.MonkeyPatch, _cleanup: list
 ) -> None:
-    import app.features.admin.router as admin_router
 
     async def _always_fail(file_id: ObjectId) -> None:
         raise RuntimeError("simulated GridFS outage during nuke")
 
-    monkeypatch.setattr(admin_router, "delete_file", _always_fail)
+    monkeypatch.setattr("app.features.documents.file_purge.delete_file", _always_fail)
 
     target_user = await db.users.insert_one(_seed_user())
     target_user_id = target_user.inserted_id

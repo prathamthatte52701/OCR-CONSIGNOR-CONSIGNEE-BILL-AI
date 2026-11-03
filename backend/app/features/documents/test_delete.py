@@ -137,14 +137,13 @@ async def test_delete_preserves_orphan_record_independent_of_document_lifecycle(
     # Feature 3's admin cleanup page needs to retry/dismiss an orphaned file even after its
     # parent document is long gone - confirm deleting the document does NOT cascade-delete the
     # orphaned_files record for its (still-undeleted) file.
-    import app.features.documents.router as documents_router
 
     fake_file_id = ObjectId()
 
     async def _always_fail(file_id: ObjectId) -> None:
         raise RuntimeError("simulated GridFS outage")
 
-    monkeypatch.setattr(documents_router, "delete_file", _always_fail)
+    monkeypatch.setattr("app.features.documents.file_purge.delete_file", _always_fail)
 
     result = await db.documents.insert_one(_seed(part1GridFsFileId=fake_file_id))
     doc_id = result.inserted_id
