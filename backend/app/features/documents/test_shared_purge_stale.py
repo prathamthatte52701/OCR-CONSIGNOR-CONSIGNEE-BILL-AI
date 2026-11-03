@@ -165,6 +165,35 @@ async def test_reprocessed_document_old_job_skips_and_new_job_runs(pipeline: lis
     assert pipeline == [True]
 
 
+async def test_failing_start_check_marks_the_document_failed(
+    monkeypatch: pytest.MonkeyPatch, pipeline: list[bool]
+) -> None:
+    user = await make_user()
+    doc = await make_document(user["_id"], uploadStatus="processing", processingRunId="r1")
+    real_db = current_db()
+    failures: list[int] = []
+
+    class _Docs:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real_db.documents, name)
+
+        async def find_one(self, *args: Any, **kwargs: Any) -> Any:
+            if not failures:
+                failures.append(1)
+                raise RuntimeError("db hiccup")
+            return await real_db.documents.find_one(*args, **kwargs)
+
+    class _Db:
+        documents = _Docs()
+
+    monkeypatch.setattr(r_mod, "get_database", lambda: _Db())
+    await _job(doc["_id"], "r1")  # must not raise
+    row = await _row(doc["_id"])
+    assert row is not None and row["uploadStatus"] == "failed"
+    assert row["processingError"].startswith("RuntimeError")
+    assert pipeline == []
+
+
 async def test_legacy_document_runs_with_run_id_none(pipeline: list[bool]) -> None:
     user = await make_user()
     doc = await make_document(user["_id"], uploadStatus="processing")

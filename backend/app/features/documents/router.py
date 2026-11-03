@@ -120,13 +120,14 @@ async def _run_pipeline_and_update(
     # Only the job holding the document's CURRENT run id may write; None matches a document
     # that has no processingRunId at all (older rows).
     run_filter = {"_id": doc_id, "processingRunId": run_id}
-    # Skip a job that went stale while queued (deleted / reprocessed) before it takes the OCR
-    # slot. Known limit: a job already WAITING for the slot inside the pipeline is not
-    # re-checked; only the start of a job is.
-    if await db.documents.find_one(run_filter, {"_id": 1}) is None:
-        logger.info("stale run skipped before start: document %s", doc_id)
-        return
     try:
+        # Skip a job that went stale while queued (deleted / reprocessed) before it takes the OCR
+        # slot. Known limit: a job already WAITING for the slot inside the pipeline is not
+        # re-checked; only the start of a job is. Inside the try, so a failing read marks the
+        # document failed instead of leaving it "processing" until the next restart.
+        if await db.documents.find_one(run_filter, {"_id": 1}) is None:
+            logger.info("stale run skipped before start: document %s", doc_id)
+            return
         # One OCR reader at a time is enforced INSIDE the pipeline (ocr/ocr_slot.py), around the
         # two heavy engine calls only; a waiting job simply stays "processing".
         update = await run_full_pipeline(part1_bytes, part1_mime, part2_bytes, part2_mime)
