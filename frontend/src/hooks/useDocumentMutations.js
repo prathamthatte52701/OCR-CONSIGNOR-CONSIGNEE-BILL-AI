@@ -41,14 +41,21 @@ export function useReprocessDocument(documentId) {
   });
 }
 
+// Shows the server message; a warning when the file cleanup failed.
+function notifyCleanup(data, fallback) {
+  const message = data?.message || fallback;
+  if (data?.gridFsCleanupFailed) toast.warning(message);
+  else toast.success(message);
+}
+
 export function useDeleteDocument() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   return useMutation({
     mutationFn: (id) => documentsApi.deleteDocument(id),
-    onSuccess: () => {
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["documents"] });
-      toast.success("Document permanently deleted.");
+      notifyCleanup(data, "Document permanently deleted.");
       navigate("/documents");
     },
     onError: (error) => toast.error(error.userMessage || "Could not delete."),
@@ -59,9 +66,9 @@ export function usePurgeFiles(documentId) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => documentsApi.purgeFiles(documentId),
-    onSuccess: () => {
+    onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["document", documentId] });
-      toast.success("Original files deleted. Extracted data was kept.");
+      notifyCleanup(data, "Original files deleted. Extracted data was kept.");
     },
     onError: (error) => toast.error(error.userMessage || "Could not delete files."),
   });

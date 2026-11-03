@@ -256,7 +256,9 @@ export function DocumentDetail({ id, embedded = false }) {
           )}
           <button
             onClick={handleReprocess}
-            disabled={busy || doc.part1FilePurged || doc.part2FilePurged}
+            disabled={
+              busy || reprocess.isPending || doc.part1FilePurged || doc.part2FilePurged
+            }
             className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border border-border hover:bg-surface-raised disabled:opacity-40"
           >
             <RefreshCw size={13} /> Reprocess

@@ -278,8 +278,8 @@ async def test_ocr_calls_of_concurrent_jobs_never_overlap_and_a_crash_does_not_b
 
     class _Docs:
         @staticmethod
-        async def update_one(*_: Any, **__: Any) -> None:
-            return None
+        async def update_one(*_: Any, **__: Any) -> Any:
+            return type("R", (), {"matched_count": 1})()
 
     class _Db:
         documents = _Docs
@@ -290,7 +290,10 @@ async def test_ocr_calls_of_concurrent_jobs_never_overlap_and_a_crash_does_not_b
     monkeypatch.setattr(r_mod, "get_database", lambda: _Db())
     args = (b"a", "image/jpeg", b"b", "image/jpeg")
     await asyncio.gather(
-        *(r_mod._run_pipeline_and_update(ObjectId(), *args, is_reprocess=False) for _ in range(3))
+        *(
+            r_mod._run_pipeline_and_update(ObjectId(), *args, is_reprocess=False, run_id=None)
+            for _ in range(3)
+        )
     )
     assert state["calls"] == 3 and state["peak"] == 1  # job 1 crashed; jobs 2 and 3 still ran
 

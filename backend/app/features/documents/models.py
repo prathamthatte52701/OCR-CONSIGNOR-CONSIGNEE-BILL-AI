@@ -36,6 +36,7 @@ class Document(MongoBaseModel):
 
     upload_status: Literal["uploaded", "processing", "processed", "failed"] = "uploaded"
     processing_error: str | None = None
+    processing_run_id: str | None = None
     processed_at: datetime | None = None
     reprocessed_at: datetime | None = None
     edited: bool = False

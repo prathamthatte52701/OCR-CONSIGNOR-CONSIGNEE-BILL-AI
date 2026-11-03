@@ -135,6 +135,7 @@ async def recover_interrupted_documents(
                 part2_bytes,
                 doc["part2MimeType"],
                 is_reprocess=bool(doc.get("processedAt")),
+                run_id=doc.get("processingRunId"),
             )
             summary["requeued"] += 1
         except Exception as exc:  # noqa: BLE001 - one bad document must not stop the others

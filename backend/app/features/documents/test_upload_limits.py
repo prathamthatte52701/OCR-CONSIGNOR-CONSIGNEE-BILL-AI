@@ -465,7 +465,7 @@ async def test_cancellation_during_stores_rolls_back_then_reraises(
     monkeypatch.setattr(r_mod, "get_database", lambda: None)
     with pytest.raises(asyncio.CancelledError):
         await r_mod._store_upload(
-            ObjectId(), ("a.jpg", b"x", "image/jpeg"), ("b.jpg", b"y", "image/jpeg")
+            ObjectId(), ("a.jpg", b"x", "image/jpeg"), ("b.jpg", b"y", "image/jpeg"), "run"
         )
     assert len(deleted) == 1
 

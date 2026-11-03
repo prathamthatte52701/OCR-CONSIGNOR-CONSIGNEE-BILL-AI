@@ -8,6 +8,7 @@ import asyncio
 import io
 import logging
 import re
+import uuid
 import zipfile
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -55,6 +56,9 @@ router = APIRouter()
 MAX_FILE_SIZE = 5 * 1024 * 1024
 MAX_BULK_SETS = 5
 MAX_PDF_PAGES = 4
+# A job lost without a restart must not block Reprocess forever; the OCR queue can legitimately
+# keep a document "processing" for many minutes, so the window is long.
+REPROCESS_STUCK_AFTER = timedelta(minutes=30)
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/jpg", "image/png", "application/pdf"}
 _MAGIC_BYTES: dict[bytes, str] = {
     b"\xff\xd8\xff": "image/jpeg",
@@ -94,14 +98,18 @@ async def _get_owned_document(
     return doc
 
 
-async def _best_effort_purge_files(doc: dict[str, Any]) -> None:
+async def _best_effort_purge_files(doc: dict[str, Any]) -> bool:
+    """Deletes both stored files; never raises. Returns True when any delete failed."""
+    failed = False
     for key in ("part1GridFsFileId", "part2GridFsFileId"):
         file_id = doc.get(key)
         if file_id:
             try:
                 await delete_file(file_id)
             except Exception as exc:  # noqa: BLE001 - best-effort, never blocks the delete
+                failed = True
                 await record_orphan(file_id, doc.get("_id"), doc.get("userId"), exc)
+    return failed
 
 
 async def _run_pipeline_and_update(
@@ -112,8 +120,12 @@ async def _run_pipeline_and_update(
     part2_mime: str,
     *,
     is_reprocess: bool,
+    run_id: str | None,
 ) -> None:
     db = get_database()
+    # Only the job holding the document's CURRENT run id may write; None matches a document
+    # that has no processingRunId at all (older rows).
+    run_filter = {"_id": doc_id, "processingRunId": run_id}
     try:
         # One OCR reader at a time is enforced INSIDE the pipeline (ocr/ocr_slot.py), around the
         # two heavy engine calls only; a waiting job simply stays "processing".
@@ -126,10 +138,12 @@ async def _run_pipeline_and_update(
         if is_reprocess:
             update["reprocessedAt"] = now
             update["edited"] = False
-        await db.documents.update_one({"_id": doc_id}, {"$set": update})
+        written = await db.documents.update_one(run_filter, {"$set": update})
+        if written.matched_count == 0:
+            logger.info("stale run ignored")
     except Exception as exc:  # noqa: BLE001 - pipeline failure must not crash the background task
-        await db.documents.update_one(
-            {"_id": doc_id},
+        failed = await db.documents.update_one(
+            run_filter,
             {
                 "$set": {
                     "uploadStatus": "failed",
@@ -140,6 +154,8 @@ async def _run_pipeline_and_update(
                 }
             },
         )
+        if failed.matched_count == 0:
+            logger.info("stale run ignored")
 
 
 _READ_CHUNK = 64 * 1024
@@ -199,7 +215,10 @@ async def _rollback_stored(stored: list[ObjectId], user_id: ObjectId) -> None:
 
 
 async def _store_upload(
-    user_id: ObjectId, part1: tuple[str, bytes, str], part2: tuple[str, bytes, str]
+    user_id: ObjectId,
+    part1: tuple[str, bytes, str],
+    part2: tuple[str, bytes, str],
+    run_id: str,
 ) -> ObjectId:
     """Stores both files and the document row; returns the document id. On any failure every
     stored file is deleted (also on cancellation, shielded) and a clean 500 is raised."""
@@ -220,6 +239,7 @@ async def _store_upload(
                 "hasLowConfidenceFields": False,
                 "multiPage": False,
                 "recoveryAttempts": 0,
+                "processingRunId": run_id,
                 "part1GridFsFileId": file1,
                 "part1OriginalFilename": name1,
                 "part1MimeType": mime1,
@@ -280,10 +300,12 @@ async def upload_document(
     part1_mime = await _validate_part("Part 1", part1_bytes, _sniff_mime_type(part1_bytes))
     part2_mime = await _validate_part("Part 2", part2_bytes, _sniff_mime_type(part2_bytes))
 
+    run_id = uuid.uuid4().hex
     doc_id = await _store_upload(
         current_user.id,
         (safe_filename(part1.filename, "part1"), part1_bytes, part1_mime),
         (safe_filename(part2.filename, "part2"), part2_bytes, part2_mime),
+        run_id,
     )
 
     background_tasks.add_task(
@@ -294,25 +316,28 @@ async def upload_document(
         part2_bytes,
         part2_mime,
         is_reprocess=False,
+        run_id=run_id,
     )
     await log_action(current_user.id, "document_uploaded", {"documentId": str(doc_id)})
     return UploadResponse(id=str(doc_id), upload_status="processing")
 
 
-_PipelineJob = tuple[ObjectId, bytes, str, bytes, str]
+_PipelineJob = tuple[ObjectId, bytes, str, bytes, str, str]
 
 
 async def _run_sequentially(jobs: list[_PipelineJob]) -> None:
     """Reads the created sets strictly one after another; a crash on one set marks only that
     document failed and the next set still runs."""
-    for doc_id, b1, m1, b2, m2 in jobs:
+    for doc_id, b1, m1, b2, m2, run_id in jobs:
         try:
-            await _run_pipeline_and_update(doc_id, b1, m1, b2, m2, is_reprocess=False)
+            await _run_pipeline_and_update(
+                doc_id, b1, m1, b2, m2, is_reprocess=False, run_id=run_id
+            )
         except Exception as exc:  # noqa: BLE001 - never let one set stop the rest
             logger.error("bulk set %s crashed the pipeline: class=%s", doc_id, type(exc).__name__)
             try:
                 await get_database().documents.update_one(
-                    {"_id": doc_id},
+                    {"_id": doc_id, "processingRunId": run_id},
                     {
                         "$set": {
                             "uploadStatus": "failed",
@@ -354,10 +379,12 @@ async def bulk_upload_documents(
             bytes2 = await _read_capped(file2, "Part 2")
             mime1 = await _validate_part("Part 1", bytes1, _sniff_mime_type(bytes1))
             mime2 = await _validate_part("Part 2", bytes2, _sniff_mime_type(bytes2))
+            run_id = uuid.uuid4().hex
             doc_id = await _store_upload(
                 current_user.id,
                 (safe_filename(file1.filename, "part1"), bytes1, mime1),
                 (safe_filename(file2.filename, "part2"), bytes2, mime2),
+                run_id,
             )
         except HTTPException as exc:
             results.append({"index": index, "error": f"Set {index + 1}, {exc.detail}"})
@@ -369,7 +396,7 @@ async def bulk_upload_documents(
             )
             continue
         # The set exists: record it FIRST, so nothing after this point can lose it.
-        jobs.append((doc_id, bytes1, mime1, bytes2, mime2))
+        jobs.append((doc_id, bytes1, mime1, bytes2, mime2, run_id))
         results.append({"index": index, "id": str(doc_id)})
         try:
             await log_action(current_user.id, "document_uploaded", {"documentId": str(doc_id)})
@@ -588,16 +615,34 @@ async def reprocess_document(
     part1_bytes = await download_buffer(doc["part1GridFsFileId"])
     part2_bytes = await download_buffer(doc["part2GridFsFileId"])
 
-    await db.documents.update_one(
-        {"_id": doc["_id"]},
+    # Atomic claim: only one concurrent Reprocess can win (double click / two tabs).
+    now = datetime.now(UTC)
+    run_id = uuid.uuid4().hex
+    claim = await db.documents.update_one(
+        {
+            "_id": doc["_id"],
+            "$or": [
+                {"uploadStatus": {"$in": ["processed", "failed"]}},
+                {
+                    "uploadStatus": "processing",
+                    "updatedAt": {"$lte": now - REPROCESS_STUCK_AFTER},
+                },
+            ],
+        },
         {
             "$set": {
                 "uploadStatus": "processing",
+                "processingRunId": run_id,
                 "recoveryAttempts": 0,  # a fresh run gets a fresh restart-recovery budget
-                "updatedAt": datetime.now(UTC),
+                "processingError": None,
+                "updatedAt": now,
             }
         },
     )
+    if claim.matched_count == 0:
+        raise HTTPException(
+            status_code=409, detail="This document is already being processed. Please wait."
+        )
     background_tasks.add_task(
         _run_pipeline_and_update,
         doc["_id"],
@@ -606,6 +651,7 @@ async def reprocess_document(
         part2_bytes,
         doc["part2MimeType"],
         is_reprocess=True,
+        run_id=run_id,
     )
     await log_action(current_user.id, "document_reprocessed", {"documentId": document_id})
     return {"message": "Reprocessing started."}
@@ -626,49 +672,61 @@ async def correct_document(
 @router.delete("/{document_id}")
 async def delete_document(
     document_id: str, current_user: CurrentUser = Depends(get_current_user)
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Permanently deletes the document record and its original files. File deletion is
     best-effort (tracked via app.core.orphaned_files on failure, see _best_effort_purge_files)
     and never blocks the record removal - a GridFS outage must not leave a document the user
     asked to delete still visible to them."""
     db = get_database()
     doc = await _get_owned_document(db, document_id, current_user.id)
-    await _best_effort_purge_files(doc)
+    cleanup_failed = await _best_effort_purge_files(doc)
     await db.documents.delete_one({"_id": doc["_id"]})
     await db.corrections.delete_many({"documentId": doc["_id"]})
     await log_action(current_user.id, "document_deleted", {"documentId": document_id})
-    return {"message": "Document permanently deleted."}
+    message = (
+        "Document permanently deleted, but we couldn't fully clean up its stored files. "
+        "This has been flagged for admin review - no action needed from you."
+        if cleanup_failed
+        else "Document permanently deleted."
+    )
+    return {"message": message, "gridFsCleanupFailed": cleanup_failed}
 
 
 @router.post("/{document_id}/purge-files")
 async def purge_document_files(
     document_id: str, current_user: CurrentUser = Depends(get_current_user)
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    """Purges BOTH original files together. A failed delete is recorded as an orphan and never
+    blocks: both parts are still marked purged and the dead file reference is cleared."""
     db = get_database()
     doc = await _get_owned_document(db, document_id, current_user.id)
     now = datetime.now(UTC)
     updates: dict[str, Any] = {}
+    cleanup_failed = False
 
-    if doc.get("part1GridFsFileId") and not doc.get("part1FilePurged"):
-        try:
-            await delete_file(doc["part1GridFsFileId"])
-        except Exception as exc:  # noqa: BLE001 - tracked, then re-raised unchanged
-            await record_orphan(doc["part1GridFsFileId"], doc["_id"], doc.get("userId"), exc)
-            raise
-        updates["part1FilePurged"] = True
-        updates["part1FilePurgedAt"] = now
-    if doc.get("part2GridFsFileId") and not doc.get("part2FilePurged"):
-        try:
-            await delete_file(doc["part2GridFsFileId"])
-        except Exception as exc:  # noqa: BLE001 - tracked, then re-raised unchanged
-            await record_orphan(doc["part2GridFsFileId"], doc["_id"], doc.get("userId"), exc)
-            raise
-        updates["part2FilePurged"] = True
-        updates["part2FilePurgedAt"] = now
+    for part in ("part1", "part2"):
+        if doc.get(f"{part}FilePurged"):
+            continue
+        file_id = doc.get(f"{part}GridFsFileId")
+        if file_id:
+            try:
+                await delete_file(file_id)
+            except Exception as exc:  # noqa: BLE001 - tracked as an orphan, never blocks
+                cleanup_failed = True
+                await record_orphan(file_id, doc["_id"], doc.get("userId"), exc)
+        updates[f"{part}FilePurged"] = True
+        updates[f"{part}FilePurgedAt"] = now
+        updates[f"{part}GridFsFileId"] = None
 
     if updates:
         updates["updatedAt"] = now
         await db.documents.update_one({"_id": doc["_id"]}, {"$set": updates})
 
     await log_action(current_user.id, "document_file_purged", {"documentId": document_id})
-    return {"message": "Original files purged. Extracted data was preserved."}
+    message = (
+        "The original files were removed from the document, but we couldn't fully clean up the "
+        "stored data. This has been flagged for admin review - no action needed from you."
+        if cleanup_failed
+        else "Original files purged. Extracted data was preserved."
+    )
+    return {"message": message, "gridFsCleanupFailed": cleanup_failed}

@@ -226,7 +226,7 @@ async def _cleanup_seeded_orphans(db: AsyncIOMotorDatabase) -> AsyncIterator[Non
     await db.orphanedfiles.delete_many({"userId": _TEST_USER_ID})
 
 
-async def test_purge_files_endpoint_records_orphan_and_propagates_failure(
+async def test_purge_files_endpoint_records_orphan_and_still_purges(
     db: AsyncIOMotorDatabase, client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import app.features.documents.router as documents_router
@@ -249,11 +249,12 @@ async def test_purge_files_endpoint_records_orphan_and_propagates_failure(
     doc_id = result.inserted_id
 
     resp = client.post(f"/api/documents/{doc_id}/purge-files")
-    assert resp.status_code == 500
+    # D1: a failed delete never blocks - the orphan is recorded, the part is still marked purged
+    assert resp.status_code == 200 and resp.json()["gridFsCleanupFailed"] is True
 
     doc = await db.documents.find_one({"_id": doc_id})
     assert doc is not None
-    assert doc.get("part1FilePurged") is not True  # failed delete must not be marked purged
+    assert doc.get("part1FilePurged") is True and doc.get("part1GridFsFileId") is None
 
     orphan = await db.orphanedfiles.find_one({"fileId": fake_file_id})
     assert orphan is not None

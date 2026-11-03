@@ -44,6 +44,7 @@ class Recorder:
         part2_mime: str,
         *,
         is_reprocess: bool,
+        run_id: str | None,
     ) -> None:
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
@@ -59,6 +60,7 @@ class Recorder:
                     "m1": part1_mime,
                     "m2": part2_mime,
                     "re": is_reprocess,
+                    "run": run_id,
                 }
             )
             if self.behaviour == "raise":
