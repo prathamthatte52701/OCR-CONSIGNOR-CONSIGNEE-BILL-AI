@@ -115,6 +115,12 @@ export default function DocumentsViewAllPage() {
         </p>
       )}
 
+      {query.isPlaceholderData && (
+        <p className="mb-2 text-xs text-text-muted" role="status">
+          Updating...
+        </p>
+      )}
+
       {query.isLoading ? (
         <LoadingState message="Loading documents..." />
       ) : query.isError ? (
@@ -133,7 +139,11 @@ export default function DocumentsViewAllPage() {
       ) : rows.length === 0 ? (
         <p className="text-sm text-text-muted py-10 text-center">No documents found.</p>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-border">
+        <div
+          className={`overflow-x-auto rounded-lg border border-border ${
+            query.isPlaceholderData ? "opacity-50" : ""
+          }`}
+        >
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-surface-raised text-left text-text-muted">

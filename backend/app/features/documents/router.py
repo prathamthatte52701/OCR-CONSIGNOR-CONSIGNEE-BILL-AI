@@ -147,6 +147,9 @@ async def _run_pipeline_and_update(
         update = await run_full_pipeline(part1_bytes, part1_mime, part2_bytes, part2_mime)
         now = datetime.now(UTC)
         update["uploadStatus"] = "processed"
+        # Same rules as the detail page; processing.py cannot import review_warnings
+        # (it imports processing), so the flag is set here, next to the status.
+        update["hasReviewWarnings"] = bool(review_warnings(update))
         update["processingError"] = None
         update["processedAt"] = now
         update["updatedAt"] = now
@@ -471,6 +474,27 @@ MAX_DOWNLOAD_ALL_IDS = 30
 MAX_DOWNLOAD_ALL_BYTES = 100 * 1024 * 1024
 DOWNLOAD_SLOT_TIMEOUT_SECONDS = 15 * 60  # a crashed run must not block the user forever
 _active_downloads: dict[ObjectId, float] = {}
+TEMP_ZIP_PREFIX = "download-all-"
+TEMP_ZIP_MAX_AGE_SECONDS = 30 * 60
+
+
+def _sweep_old_temp_zips() -> None:
+    """Deletes download-all temp zips left behind by a killed process (older than 30 min).
+    Touches only files named download-all-*.zip; any error is ignored per file."""
+    try:
+        names = os.listdir(tempfile.gettempdir())
+    except OSError:
+        return
+    cutoff = time.time() - TEMP_ZIP_MAX_AGE_SECONDS
+    for name in names:
+        if not (name.startswith(TEMP_ZIP_PREFIX) and name.endswith(".zip")):
+            continue
+        path = os.path.join(tempfile.gettempdir(), name)
+        try:
+            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                os.unlink(path)
+        except OSError:
+            pass
 
 
 async def _stored_size(doc: dict[str, Any], part: str) -> int:
@@ -498,6 +522,10 @@ async def download_all(
         raise HTTPException(
             status_code=400, detail=f"Select at most {MAX_DOWNLOAD_ALL_IDS} documents."
         )
+    try:
+        _sweep_old_temp_zips()
+    except Exception:  # noqa: BLE001 - housekeeping must never fail a download
+        pass
     ids: list[ObjectId] = []
     for raw in dict.fromkeys(body.document_ids):  # de-duplicated, order kept
         if not is_valid_object_id(raw):
@@ -557,7 +585,7 @@ async def download_all(
         included = 0
         skipped = len(ids) - len(usable)
         used_folders: set[str] = set()
-        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="download-all-")
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix=TEMP_ZIP_PREFIX)
         os.close(fd)
         zf = await asyncio.to_thread(zipfile.ZipFile, tmp_path, "w", zipfile.ZIP_DEFLATED)
         try:
@@ -590,7 +618,7 @@ async def download_all(
             await log_action(
                 user_id,
                 "documents_download_all",
-                {"requested": len(body.document_ids), "included": included, "skipped": skipped},
+                {"requested": len(ids), "included": included, "skipped": skipped},
             )
         except Exception as exc:  # noqa: BLE001 - a failed audit write must not fail the download
             logger.error("download-all audit failed: class=%s", type(exc).__name__)
@@ -619,7 +647,7 @@ async def download_all(
             "Content-Length": str(zip_size),
             "X-Included-Count": str(included),
             "X-Skipped-Count": str(skipped),
-            "X-Total-Count": str(len(body.document_ids)),
+            "X-Total-Count": str(len(ids)),
         },
     )
 

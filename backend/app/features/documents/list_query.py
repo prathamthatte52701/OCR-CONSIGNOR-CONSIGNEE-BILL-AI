@@ -30,6 +30,7 @@ SORT_HELPER = "_sortKey"
 _SEP = r"[./-]"
 _YEAR_ANY = r"(?:\d{4}|\d{2})"
 _MONTH_RE = re.compile(r"^(\d{4})-(0[1-9]|1[0-2])$")
+_DATE_PARAM_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 # Any string that is NOT date-shaped (used for the "No date found" month filter).
 _NOT_DATE_SHAPED = rf"^(?!\s*\d{{1,2}}{_SEP}\d{{1,2}}{_SEP}{_YEAR_ANY}\s*$)"
 
@@ -49,12 +50,12 @@ def _search_condition(search: str) -> dict[str, Any]:
 
 
 def _date_condition(day: str) -> dict[str, Any]:
+    if not _DATE_PARAM_RE.fullmatch(day):
+        raise _bad("Invalid date. Use YYYY-MM-DD.")
     try:
         picked = date.fromisoformat(day)
     except ValueError:
         raise _bad("Invalid date. Use YYYY-MM-DD.") from None
-    if len(day) != 10:
-        raise _bad("Invalid date. Use YYYY-MM-DD.")
     year = rf"(?:{picked.year}|{str(picked.year)[2:]})"
     pattern = rf"^\s*0?{picked.day}{_SEP}0?{picked.month}{_SEP}{year}\s*$"
     return {"challanDate": {"$regex": pattern}}
@@ -117,7 +118,15 @@ def build_list_query(
         start = upload_range_start_utc(date_range, now or datetime.now(UTC))
         conditions.append({"createdAt": {"$gte": start}})
     if needs_review:
-        conditions.append({"$or": [{"uploadStatus": "failed"}, {"hasLowConfidenceFields": True}]})
+        conditions.append(
+            {
+                "$or": [
+                    {"uploadStatus": "failed"},
+                    {"hasLowConfidenceFields": True},
+                    {"hasReviewWarnings": True},
+                ]
+            }
+        )
     query: dict[str, Any] = {"userId": user_id, "isDeleted": {"$ne": True}}
     if conditions:
         query["$and"] = conditions

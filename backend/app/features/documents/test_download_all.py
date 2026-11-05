@@ -67,7 +67,7 @@ async def test_duplicate_ids_are_deduplicated_in_order(client: TestClient) -> No
     u = await make_user()
     a = await make_document(u["_id"], invoiceNo="DUP-1")
     r = post(client, u, [a["id"], a["id"]])
-    assert r.headers["X-Included-Count"] == "1" and r.headers["X-Total-Count"] == "2"
+    assert r.headers["X-Included-Count"] == "1" and r.headers["X-Total-Count"] == "1"
 
 
 async def test_foreign_and_deleted_ids_are_skipped_and_counted(client: TestClient) -> None:

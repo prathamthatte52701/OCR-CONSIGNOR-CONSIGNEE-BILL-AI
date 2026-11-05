@@ -1,6 +1,7 @@
 """Shared field-correction logic used by both the user-facing and admin document routers -
 same field validation, same true-overwrite behavior, same audit trail."""
 
+import copy
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -10,6 +11,7 @@ from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.audit_log import log_action
+from app.features.documents.review_warnings import review_warnings
 from app.features.ocr.extraction import (
     LINE_ITEM_FIELD_CLASSES,
     PART1_FIELD_CLASSES,
@@ -24,6 +26,18 @@ EDITABLE_TOP_LEVEL_FIELDS = (
 )
 _FIELD_CLASS_LOOKUP: dict[str, FieldClass] = {**PART1_FIELD_CLASSES, **PART2_SUMMARY_FIELD_CLASSES}
 _LINE_ITEM_FIELD_RE = re.compile(r"^lineItems\.(\d+)\.(\w+)$")
+
+
+def _has_review_warnings_after(doc: dict[str, Any], set_ops: dict[str, Any]) -> bool:
+    """review_warnings() on the document as it will be once set_ops is applied."""
+    after = copy.deepcopy(doc)
+    for key, new_value in set_ops.items():
+        match = _LINE_ITEM_FIELD_RE.match(key)
+        if match:
+            after["lineItems"][int(match.group(1))][match.group(2)] = new_value
+        else:
+            after[key] = new_value
+    return bool(review_warnings(after))
 
 
 async def apply_field_correction(
@@ -78,6 +92,7 @@ async def apply_field_correction(
         if field.endswith("Pincode") or (field_class and field_class != FieldClass.FREE_TEXT_LIGHT):
             set_ops[f"{field}AutoCorrected"] = False
 
+    set_ops["hasReviewWarnings"] = _has_review_warnings_after(doc, set_ops)
     set_ops["edited"] = True
     set_ops["updatedAt"] = now
     # Conditional on the document still being finished: a reprocess can start between the

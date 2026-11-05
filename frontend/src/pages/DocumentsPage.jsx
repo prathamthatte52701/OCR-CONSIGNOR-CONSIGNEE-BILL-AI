@@ -95,7 +95,10 @@ export default function DocumentsPage() {
     if (selectedMonthNumber) pickMonth(`${year}-${selectedMonthNumber}`);
   };
   const thisYear = new Date().getFullYear();
-  const years = Array.from({ length: 6 }, (_, i) => String(thisYear - 4 + i));
+  // thisYear-9 .. thisYear+1, plus the year from the URL when it is outside that range.
+  const years = Array.from({ length: 11 }, (_, i) => String(thisYear - 9 + i));
+  if (!years.includes(pickedYear)) years.push(pickedYear);
+  years.sort();
 
   const goToPage = (p) => {
     setSearchParams({ ...Object.fromEntries(searchParams), page: String(p) });
@@ -153,7 +156,7 @@ export default function DocumentsPage() {
           <button
             type="button"
             onClick={handleDownloadAll}
-            disabled={downloadingAll || !query.data?.items.length}
+            disabled={downloadingAll || query.isPlaceholderData || !query.data?.items.length}
             className="flex items-center gap-1.5 rounded border border-border px-3 py-1.5 text-sm font-medium hover:border-accent/50 disabled:opacity-30"
           >
             <Download size={14} />
@@ -273,6 +276,12 @@ export default function DocumentsPage() {
         </p>
       )}
 
+      {query.isPlaceholderData && (
+        <p className="mb-2 text-xs text-text-muted" role="status">
+          Updating...
+        </p>
+      )}
+
       {query.isLoading ? (
         <LoadingState message="Loading documents..." />
       ) : query.isError ? (
@@ -291,7 +300,7 @@ export default function DocumentsPage() {
       ) : query.data.items.length === 0 ? (
         <p className="text-sm text-text-muted py-10 text-center">No documents found.</p>
       ) : (
-        <div className="space-y-2">
+        <div className={cn("space-y-2", query.isPlaceholderData && "opacity-50")}>
           {query.data.items.map((doc, index) => (
             <Link
               key={doc.id}
