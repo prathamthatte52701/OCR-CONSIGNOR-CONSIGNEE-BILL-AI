@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { documentsApi } from "../api/documents";
 
@@ -9,6 +9,7 @@ export function useDocumentsList(params) {
   return useQuery({
     queryKey: ["documents", params],
     queryFn: () => documentsApi.list(params),
+    placeholderData: keepPreviousData, // no flash of an empty list while the next page loads
   });
 }
 

@@ -31,3 +31,7 @@ class StatsResponse(CamelModel):
     processed_today: int
     low_confidence: int
     multi_page: int
+
+
+class DownloadAllRequest(CamelModel):
+    document_ids: list[str] = Field(default_factory=list, max_length=500)

@@ -1,12 +1,22 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { AlertTriangle, Layers, Download } from "lucide-react";
 import { toast } from "sonner";
 import { useDocumentsList } from "../hooks/useDocumentsQueries";
 import { documentsApi } from "../api/documents";
+import { readErrorMessage } from "../api/client";
 import LoadingState from "../components/LoadingState";
 import { formatIST } from "../lib/formatDate";
 import { cn } from "../lib/utils";
+import {
+  MONTH_NAMES,
+  apiParamsFromFilters,
+  describeFilters,
+  filtersFromSearchParams,
+  hasActiveFilters,
+  parsePage,
+  urlParamsFromFilters,
+} from "../lib/documentFilters";
 
 const PAGE_SIZE = 30;
 
@@ -37,29 +47,75 @@ const STATUS_STYLES = {
 
 export default function DocumentsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const [invoiceNo, setInvoiceNo] = useState(searchParams.get("invoiceNo") || "");
-  const [consigneeCode, setConsigneeCode] = useState(searchParams.get("consigneeCode") || "");
-  const [date, setDate] = useState(searchParams.get("date") || "");
-
-  const page = Number(searchParams.get("page") || 1);
-  const range = searchParams.get("range") || "";
-  const listParams = {
-    page,
-    limit: PAGE_SIZE,
-    invoiceNo: searchParams.get("invoiceNo") || undefined,
-    consigneeCode: searchParams.get("consigneeCode") || undefined,
-    date: searchParams.get("date") || undefined,
-    range: range || undefined,
-  };
-  const query = useDocumentsList(listParams);
+  const filters = filtersFromSearchParams(searchParams);
+  const page = parsePage(searchParams);
+  const [searchText, setSearchText] = useState(filters.search);
+  const [pickedYear, setPickedYear] = useState(
+    /^\d{4}-/.test(filters.month) ? filters.month.slice(0, 4) : String(new Date().getFullYear())
+  );
+  const query = useDocumentsList({ ...apiParamsFromFilters(filters), page, limit: PAGE_SIZE });
   const [downloadingAll, setDownloadingAll] = useState(false);
+  const downloadingRef = useRef(false);
+
+  const total = query.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  // A page past the end (a deleted last page, a hand-edited URL) goes to the last real page.
+  useEffect(() => {
+    if (query.data && !query.isPlaceholderData && page > totalPages) {
+      setSearchParams(
+        { ...Object.fromEntries(searchParams), page: String(totalPages) },
+        { replace: true }
+      );
+    }
+  }, [query.data, query.isPlaceholderData, page, totalPages, searchParams, setSearchParams]);
+
+  // Keep the search box in step when the URL changes from outside (Clear, back button).
+  useEffect(() => setSearchText(filters.search), [filters.search]);
+
+  // Any filter change goes back to page 1.
+  const applyFilters = (next) => {
+    setSearchParams({ ...urlParamsFromFilters(next), page: "1" });
+  };
+
+  const runSearch = (e) => {
+    e.preventDefault();
+    applyFilters({ ...filters, search: searchText.trim() });
+  };
+
+  // The date picker and the month filter clear each other.
+  const pickDate = (value) =>
+    applyFilters({ ...filters, date: value, month: value ? "" : filters.month });
+  const pickMonth = (value) =>
+    applyFilters({ ...filters, month: value, date: value ? "" : filters.date });
+  const selectedMonthNumber = /^\d{4}-\d{2}$/.test(filters.month) ? filters.month.slice(5) : "";
+  const onMonthSelect = (mm) => pickMonth(mm ? `${pickedYear}-${mm}` : "");
+  const onYearSelect = (year) => {
+    setPickedYear(year);
+    if (selectedMonthNumber) pickMonth(`${year}-${selectedMonthNumber}`);
+  };
+  const thisYear = new Date().getFullYear();
+  const years = Array.from({ length: 6 }, (_, i) => String(thisYear - 4 + i));
+
+  const goToPage = (p) => {
+    setSearchParams({ ...Object.fromEntries(searchParams), page: String(p) });
+  };
+
+  const filterDescription = describeFilters(filters);
+  const viewAllLink = `/documents/view-all${
+    hasActiveFilters(filters) ? `?${new URLSearchParams(urlParamsFromFilters(filters))}` : ""
+  }`;
 
   const handleDownloadAll = async () => {
+    if (downloadingRef.current) return; // state alone lags a fast double click
+    const ids = (query.data?.items || []).map((d) => d.id);
+    if (!ids.length) return;
+    downloadingRef.current = true;
     setDownloadingAll(true);
     try {
-      const { blob, included, skipped } = await documentsApi.downloadAll(listParams);
+      const { blob, included, skipped } = await documentsApi.downloadAll(ids);
       if (included === 0) {
-        toast.error("Nothing to download - every document's files on this page are gone.");
+        toast.error("Nothing to download - the files of these documents are gone.");
         return;
       }
       const url = URL.createObjectURL(blob);
@@ -76,40 +132,12 @@ export default function DocumentsPage() {
         }.`
       );
     } catch (error) {
-      toast.error(error.userMessage || "Could not download documents.");
+      toast.error(await readErrorMessage(error, "Could not download documents."));
     } finally {
+      downloadingRef.current = false;
       setDownloadingAll(false);
     }
   };
-
-  const runSearch = (e) => {
-    e.preventDefault();
-    const params = {};
-    if (invoiceNo) params.invoiceNo = invoiceNo;
-    if (consigneeCode) params.consigneeCode = consigneeCode;
-    if (date) params.date = date;
-    if (range) params.range = range;
-    params.page = "1";
-    setSearchParams(params);
-  };
-
-  const goToPage = (p) => {
-    setSearchParams({ ...Object.fromEntries(searchParams), page: String(p) });
-  };
-
-  const selectRange = (value) => {
-    const params = Object.fromEntries(searchParams);
-    if (value) {
-      params.range = value;
-    } else {
-      delete params.range;
-    }
-    params.page = "1";
-    setSearchParams(params);
-  };
-
-  const total = query.data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <div>
@@ -117,7 +145,7 @@ export default function DocumentsPage() {
         <h1 className="text-xl font-semibold">Documents</h1>
         <div className="flex items-center gap-2">
           <Link
-            to="/documents/view-all"
+            to={viewAllLink}
             className="rounded border border-border px-3 py-1.5 text-sm font-medium hover:border-accent/50"
           >
             View All Details
@@ -134,40 +162,83 @@ export default function DocumentsPage() {
         </div>
       </div>
 
-      <form onSubmit={runSearch} className="flex flex-wrap gap-2 mb-6 bg-surface border border-border rounded-lg p-3">
+      <form
+        onSubmit={runSearch}
+        className="flex flex-wrap items-center gap-2 mb-3 bg-surface border border-border rounded-lg p-3"
+      >
         <input
-          placeholder="Invoice No"
-          value={invoiceNo}
-          onChange={(e) => setInvoiceNo(e.target.value)}
-          className="rounded border border-border bg-bg px-3 py-1.5 text-sm flex-1 min-w-[140px]"
+          placeholder="Invoice no, consignee code or name"
+          value={searchText}
+          maxLength={100}
+          onChange={(e) => setSearchText(e.target.value)}
+          className="rounded border border-border bg-bg px-3 py-1.5 text-sm flex-1 min-w-[220px]"
         />
-        <input
-          placeholder="Consignee Code"
-          value={consigneeCode}
-          onChange={(e) => setConsigneeCode(e.target.value)}
-          className="rounded border border-border bg-bg px-3 py-1.5 text-sm flex-1 min-w-[140px]"
-        />
-        <input
-          type="date"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-          className="rounded border border-border bg-bg px-3 py-1.5 text-sm"
-        />
-        <button type="submit" className="bg-accent text-bg rounded px-4 py-1.5 text-sm font-medium hover:bg-accent-dim">
+        <button
+          type="submit"
+          className="bg-accent text-bg rounded px-4 py-1.5 text-sm font-medium hover:bg-accent-dim"
+        >
           Search
         </button>
       </form>
 
-      <div className="flex flex-wrap items-center gap-2 mb-6">
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <span className="text-xs text-text-muted">Document date:</span>
+        <input
+          type="date"
+          value={filters.date}
+          onChange={(e) => pickDate(e.target.value)}
+          aria-label="Document date"
+          className="rounded border border-border bg-bg px-2 py-1 text-xs"
+        />
+        <select
+          value={selectedMonthNumber}
+          onChange={(e) => onMonthSelect(e.target.value)}
+          aria-label="Month"
+          className="rounded border border-border bg-bg px-2 py-1 text-xs"
+        >
+          <option value="">All months</option>
+          {MONTH_NAMES.map((name, i) => (
+            <option key={name} value={String(i + 1).padStart(2, "0")}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <select
+          value={pickedYear}
+          onChange={(e) => onYearSelect(e.target.value)}
+          aria-label="Year"
+          className="rounded border border-border bg-bg px-2 py-1 text-xs"
+        >
+          {years.map((y) => (
+            <option key={y} value={y}>
+              {y}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => pickMonth(filters.month === "none" ? "" : "none")}
+          className={cn(
+            "px-3 py-1 rounded-full border text-xs font-medium",
+            filters.month === "none"
+              ? "bg-accent text-bg border-accent"
+              : "border-border text-text-muted hover:border-accent/50"
+          )}
+        >
+          No date found
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 mb-4">
         <span className="text-xs text-text-muted">Uploaded:</span>
         {RANGE_OPTIONS.map((opt) => (
           <button
             key={opt.value || "all"}
             type="button"
-            onClick={() => selectRange(opt.value)}
+            onClick={() => applyFilters({ ...filters, range: opt.value })}
             className={cn(
               "px-3 py-1 rounded-full border text-xs font-medium",
-              range === opt.value
+              filters.range === opt.value
                 ? "bg-accent text-bg border-accent"
                 : "border-border text-text-muted hover:border-accent/50"
             )}
@@ -175,11 +246,49 @@ export default function DocumentsPage() {
             {opt.label}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => applyFilters({ ...filters, needsReview: !filters.needsReview })}
+          className={cn(
+            "px-3 py-1 rounded-full border text-xs font-medium",
+            filters.needsReview
+              ? "bg-warning text-bg border-warning"
+              : "border-border text-text-muted hover:border-warning/50"
+          )}
+        >
+          Needs review
+        </button>
       </div>
+
+      {filterDescription.length > 0 && (
+        <p className="flex flex-wrap items-center gap-2 mb-4 text-xs text-text-muted">
+          <span>Filtered by {filterDescription.join(", ")}</span>
+          <button
+            type="button"
+            onClick={() => setSearchParams({ page: "1" })}
+            className="rounded border border-border px-2 py-0.5 hover:border-accent/50"
+          >
+            Clear
+          </button>
+        </p>
+      )}
 
       {query.isLoading ? (
         <LoadingState message="Loading documents..." />
-      ) : query.data?.items.length === 0 ? (
+      ) : query.isError ? (
+        <div className="text-center py-10">
+          <p className="text-sm text-danger mb-3">
+            {query.error?.userMessage || "Could not load your documents. Please try again."}
+          </p>
+          <button
+            type="button"
+            onClick={() => query.refetch()}
+            className="rounded border border-border px-3 py-1.5 text-sm font-medium hover:border-accent/50"
+          >
+            Retry
+          </button>
+        </div>
+      ) : query.data.items.length === 0 ? (
         <p className="text-sm text-text-muted py-10 text-center">No documents found.</p>
       ) : (
         <div className="space-y-2">

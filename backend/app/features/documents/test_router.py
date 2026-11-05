@@ -10,7 +10,8 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
 from app.core.config import settings
 from app.features.auth.dependencies import CurrentUser, get_current_user
-from app.features.documents.router import _upload_range_start_utc, ist_today_utc_range
+from app.features.documents.list_query import upload_range_start_utc as _upload_range_start_utc
+from app.features.documents.router import ist_today_utc_range
 from app.main import app
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -42,31 +43,32 @@ def test_ist_midnight_boundary_not_shared_with_previous_utc_day() -> None:
 # --- _upload_range_start_utc: pure boundary math, no DB needed ---------------------------
 
 
-def test_range_today_start_is_midnight_utc_same_day() -> None:
+def test_range_today_start_is_midnight_ist_same_day() -> None:
+    # buckets are IST calendar days (00:00 IST == 18:30 UTC the day before)
     now = datetime(2026, 7, 31, 15, 42, 7, tzinfo=UTC)
-    assert _upload_range_start_utc("today", now) == datetime(2026, 7, 31, 0, 0, 0, tzinfo=UTC)
+    assert _upload_range_start_utc("today", now) == datetime(2026, 7, 30, 18, 30, 0, tzinfo=UTC)
 
 
 def test_range_week_starts_monday_when_now_is_monday() -> None:
     # 2026-07-27 is a Monday - the week bucket should start at that same day's midnight.
     now = datetime(2026, 7, 27, 8, 0, tzinfo=UTC)
-    assert _upload_range_start_utc("week", now) == datetime(2026, 7, 27, 0, 0, tzinfo=UTC)
+    assert _upload_range_start_utc("week", now) == datetime(2026, 7, 26, 18, 30, tzinfo=UTC)
 
 
 def test_range_week_starts_monday_when_now_is_sunday() -> None:
     # 2026-08-02 is a Sunday, the last day of the week starting 2026-07-27 (Monday).
-    now = datetime(2026, 8, 2, 23, 59, tzinfo=UTC)
-    assert _upload_range_start_utc("week", now) == datetime(2026, 7, 27, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)  # 17:30 IST, still Sunday in IST
+    assert _upload_range_start_utc("week", now) == datetime(2026, 7, 26, 18, 30, tzinfo=UTC)
 
 
 def test_range_month_starts_first_of_month() -> None:
-    now = datetime(2026, 7, 31, 23, 0, tzinfo=UTC)
-    assert _upload_range_start_utc("month", now) == datetime(2026, 7, 1, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+    assert _upload_range_start_utc("month", now) == datetime(2026, 6, 30, 18, 30, tzinfo=UTC)
 
 
 def test_range_year_starts_jan_1() -> None:
-    now = datetime(2026, 7, 31, 23, 0, tzinfo=UTC)
-    assert _upload_range_start_utc("year", now) == datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+    now = datetime(2026, 7, 31, 12, 0, tzinfo=UTC)
+    assert _upload_range_start_utc("year", now) == datetime(2025, 12, 31, 18, 30, tzinfo=UTC)
 
 
 def test_range_unknown_key_raises() -> None:
@@ -209,7 +211,7 @@ async def test_range_composes_with_invoice_no_as_and_not_or(
             _seed(now - timedelta(days=400), invoiceNo="MATCH-BOTH"),  # matches invoiceNo only
         ]
     )
-    resp = client.get("/api/documents", params={"range": "today", "invoiceNo": "MATCH-BOTH"})
+    resp = client.get("/api/documents", params={"range": "today", "search": "MATCH-BOTH"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 1

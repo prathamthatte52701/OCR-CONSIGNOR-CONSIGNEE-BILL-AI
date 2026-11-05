@@ -37,3 +37,9 @@ async def delete_file(file_id: ObjectId) -> None:
         await gridfs.delete(file_id)
     except NoFile:
         pass
+
+
+async def get_file_length(file_id: ObjectId) -> int:
+    """Stored size in bytes (reads only the files-collection row, not the chunks)."""
+    stream = await get_gridfs().open_download_stream(file_id)
+    return int(stream.length)

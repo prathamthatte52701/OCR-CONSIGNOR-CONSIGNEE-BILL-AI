@@ -41,9 +41,10 @@ export const documentsApi = {
       blob: r.data,
       filename: (r.headers["content-disposition"] || "").match(/filename="([^"]+)"/)?.[1] || part,
     })),
-  downloadAll: (params) =>
+  // Zips exactly the given document ids (the ones the page is showing).
+  downloadAll: (documentIds) =>
     client
-      .post("/documents/download-all", null, { params, responseType: "blob" })
+      .post("/documents/download-all", { documentIds }, { responseType: "blob" })
       .then((r) => ({
         blob: r.data,
         included: Number(r.headers["x-included-count"] ?? 0),

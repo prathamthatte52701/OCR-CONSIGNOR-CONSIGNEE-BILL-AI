@@ -1,201 +1,234 @@
+"""Download All: POST {documentIds} -> zip of the originals of exactly those documents."""
+
 import io
+import os
+import threading
 import zipfile
-from collections.abc import AsyncIterator, Iterator
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from bson import ObjectId
 from fastapi.testclient import TestClient
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
-from app.core.config import settings
-from app.features.auth.dependencies import CurrentUser, get_current_user
+from app.features.documents import router as r_mod
 from app.main import app
+from testkit import PART1_BYTES, PART2_BYTES, current_db, make_document, make_user
 
-# Same real-dev-Mongo, per-test-run-unique-userId isolation pattern as test_router.py /
-# test_delete.py: nothing here can touch a real user's data, and every seeded document +
-# uploaded GridFS file is cleaned up unconditionally.
-#
-# GridFS files are uploaded through a GridFSBucket built on the *test's own* Motor client
-# (the `db` fixture) rather than app.features.documents.gridfs_service.upload_buffer, which
-# is bound to the app's lifespan-managed connection on TestClient's internal event loop -
-# calling that directly from an async test function (a different event loop) raises "Future
-# attached to a different loop", the same hazard documented in test_router.py's `db` fixture.
-# GridFS content itself isn't loop-bound (it's just data in the DB), so uploading via a
-# same-loop bucket and later reading it back through the app's own connection is safe.
-
-_TEST_USER_ID = ObjectId()
-_OTHER_USER_ID = ObjectId()
-_uploaded_file_ids: list[ObjectId] = []
-
-
-def _fake_current_user() -> CurrentUser:
-    return CurrentUser(
-        id=_TEST_USER_ID,
-        username="download-all-test-user",
-        email="download-all-test-user@example.invalid",
-        role="user",
-        token_version=0,
-    )
+URL = "/api/documents/download-all"
 
 
 @pytest.fixture(scope="module")
-def client() -> Iterator[TestClient]:
-    app.dependency_overrides[get_current_user] = _fake_current_user
+def client() -> Any:
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
-    app.dependency_overrides.pop(get_current_user, None)
-
-
-@pytest.fixture
-async def db() -> AsyncIterator[AsyncIOMotorDatabase]:
-    test_client: AsyncIOMotorClient = AsyncIOMotorClient(settings.mongo_uri, tz_aware=True)
-    try:
-        yield test_client[settings.mongo_db_name]
-    finally:
-        test_client.close()
 
 
 @pytest.fixture(autouse=True)
-async def _cleanup(db: AsyncIOMotorDatabase) -> AsyncIterator[None]:
+def _free_slots() -> Any:
+    r_mod._active_downloads.clear()
     yield
-    await db.documents.delete_many({"userId": {"$in": [_TEST_USER_ID, _OTHER_USER_ID]}})
-    bucket = AsyncIOMotorGridFSBucket(db)
-    for file_id in _uploaded_file_ids:
-        try:
-            await bucket.delete(file_id)
-        except Exception:  # noqa: BLE001 - best-effort test cleanup
-            pass
-    _uploaded_file_ids.clear()
+    r_mod._active_downloads.clear()
 
 
-async def _upload_test_file(db: AsyncIOMotorDatabase, filename: str, data: bytes) -> ObjectId:
-    bucket = AsyncIOMotorGridFSBucket(db)
-    file_id = await bucket.upload_from_stream(filename, data)
-    _uploaded_file_ids.append(file_id)
-    return file_id
+def post(client: TestClient, user: dict[str, Any], ids: list[str]) -> Any:
+    return client.post(URL, json={"documentIds": ids}, headers=user["headers"])
 
 
-async def _seed_with_files(
-    db: AsyncIOMotorDatabase, invoice_no: str, **overrides: object
-) -> dict[str, Any]:
-    part1_id = await _upload_test_file(db, "part1.jpg", b"part1-bytes")
-    part2_id = await _upload_test_file(db, "part2.jpg", b"part2-bytes")
-    doc: dict[str, Any] = {
-        "userId": _TEST_USER_ID,
-        "uploadStatus": "processed",
-        "createdAt": datetime.now(UTC),
-        "invoiceNo": invoice_no,
-        "part1GridFsFileId": part1_id,
-        "part1OriginalFilename": "part1.jpg",
-        "part1FilePurged": False,
-        "part2GridFsFileId": part2_id,
-        "part2OriginalFilename": "part2.jpg",
-        "part2FilePurged": False,
+def names(resp: Any) -> set[str]:
+    return set(zipfile.ZipFile(io.BytesIO(resp.content)).namelist())
+
+
+async def test_zip_has_one_folder_per_document(client: TestClient) -> None:
+    u = await make_user()
+    a = await make_document(u["_id"], invoiceNo="ZIP-A")
+    b = await make_document(u["_id"], invoiceNo="ZIP-B")
+    r = post(client, u, [a["id"], b["id"]])
+    assert r.status_code == 200
+    assert (r.headers["X-Included-Count"], r.headers["X-Skipped-Count"]) == ("2", "0")
+    assert r.headers["X-Total-Count"] == "2"
+    assert names(r) == {
+        "ZIP-A/part1_part1.jpg",
+        "ZIP-A/part2_part2.jpg",
+        "ZIP-B/part1_part1.jpg",
+        "ZIP-B/part2_part2.jpg",
     }
-    doc.update(overrides)
-    return doc
+    zf = zipfile.ZipFile(io.BytesIO(r.content))
+    assert zf.read("ZIP-A/part1_part1.jpg") == PART1_BYTES
+    assert zf.read("ZIP-A/part2_part2.jpg") == PART2_BYTES
 
 
-async def test_download_all_zips_every_doc_on_the_page(
-    db: AsyncIOMotorDatabase, client: TestClient
+async def test_more_than_30_ids_is_400(client: TestClient) -> None:
+    u = await make_user()
+    assert post(client, u, [str(ObjectId()) for _ in range(31)]).status_code == 400
+    assert post(client, u, [str(ObjectId()) for _ in range(30)]).status_code == 200
+
+
+async def test_duplicate_ids_are_deduplicated_in_order(client: TestClient) -> None:
+    u = await make_user()
+    a = await make_document(u["_id"], invoiceNo="DUP-1")
+    r = post(client, u, [a["id"], a["id"]])
+    assert r.headers["X-Included-Count"] == "1" and r.headers["X-Total-Count"] == "2"
+
+
+async def test_foreign_and_deleted_ids_are_skipped_and_counted(client: TestClient) -> None:
+    u, other = await make_user(), await make_user()
+    mine = await make_document(u["_id"], invoiceNo="MINE")
+    theirs = await make_document(other["_id"], invoiceNo="THEIRS")
+    gone = await make_document(u["_id"], invoiceNo="GONE", isDeleted=True)
+    r = post(client, u, [mine["id"], theirs["id"], gone["id"], str(ObjectId())])
+    assert r.status_code == 200
+    assert (r.headers["X-Included-Count"], r.headers["X-Skipped-Count"]) == ("1", "3")
+    assert names(r) == {"MINE/part1_part1.jpg", "MINE/part2_part2.jpg"}
+
+
+async def test_malformed_id_is_400(client: TestClient) -> None:
+    u = await make_user()
+    assert post(client, u, ["nope"]).status_code == 400
+
+
+async def test_same_invoice_number_gets_unique_folders(client: TestClient) -> None:
+    u = await make_user()
+    ids = [(await make_document(u["_id"], invoiceNo="SAME"))["id"] for _ in range(3)]
+    r = post(client, u, ids)
+    assert r.headers["X-Included-Count"] == "3"
+    folders = {n.split("/")[0] for n in names(r)}
+    assert folders == {"SAME", "SAME-2", "SAME-3"} and len(names(r)) == 6
+
+
+async def test_hostile_invoice_number_cannot_escape_the_zip(client: TestClient) -> None:
+    u = await make_user()
+    d = await make_document(u["_id"], invoiceNo="../../etc/passwd")
+    for n in names(post(client, u, [d["id"]])):
+        assert not n.startswith(("/", "..")) and ".." not in n.split("/")
+
+
+async def test_purged_missing_and_unreadable_parts_are_skipped(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    docs = [
-        await _seed_with_files(db, "ZIP-A"),
-        await _seed_with_files(db, "ZIP-B"),
-    ]
-    await db.documents.insert_many(docs)
+    u = await make_user()
+    good = await make_document(u["_id"], invoiceNo="GOOD")
+    purged = await make_document(u["_id"], invoiceNo="PURGED", part1FilePurged=True)
+    no_id = await make_document(u["_id"], invoiceNo="NOID", part2GridFsFileId=None)
+    broken = await make_document(u["_id"], invoiceNo="BROKEN")
+    real = r_mod.download_buffer
 
-    resp = client.post("/api/documents/download-all")
-    assert resp.status_code == 200
-    assert resp.headers["X-Included-Count"] == "2"
-    assert resp.headers["X-Skipped-Count"] == "0"
+    async def flaky(file_id: ObjectId) -> bytes:
+        if file_id == broken["part2GridFsFileId"]:
+            raise RuntimeError("gridfs down")
+        return await real(file_id)
 
-    zf = zipfile.ZipFile(io.BytesIO(resp.content))
-    names = set(zf.namelist())
-    assert "ZIP-A/part1_part1.jpg" in names
-    assert "ZIP-A/part2_part2.jpg" in names
-    assert "ZIP-B/part1_part1.jpg" in names
-    assert "ZIP-B/part2_part2.jpg" in names
+    monkeypatch.setattr(r_mod, "download_buffer", flaky)
+    r = post(client, u, [good["id"], purged["id"], no_id["id"], broken["id"]])
+    assert r.status_code == 200
+    assert (r.headers["X-Included-Count"], r.headers["X-Skipped-Count"]) == ("1", "3")
+    assert {n.split("/")[0] for n in names(r)} == {"GOOD"}  # no half-written BROKEN folder
 
 
-async def test_download_all_skips_docs_with_purged_files(
-    db: AsyncIOMotorDatabase, client: TestClient
+async def test_over_the_size_cap_is_413_before_any_read(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    good = await _seed_with_files(db, "GOOD-DOC")
-    purged = await _seed_with_files(db, "PURGED-DOC", part1FilePurged=True)
-    await db.documents.insert_many([good, purged])
+    u = await make_user()
+    a = await make_document(u["_id"], part1Size=600, part2Size=600)
+    reads: list[Any] = []
 
-    resp = client.post("/api/documents/download-all")
-    assert resp.status_code == 200
-    assert resp.headers["X-Included-Count"] == "1"
-    assert resp.headers["X-Skipped-Count"] == "1"
+    async def spy(file_id: ObjectId) -> bytes:
+        reads.append(file_id)
+        return b""
 
-    zf = zipfile.ZipFile(io.BytesIO(resp.content))
-    names = zf.namelist()
-    assert any(n.startswith("GOOD-DOC/") for n in names)
-    assert not any(n.startswith("PURGED-DOC/") for n in names)
+    monkeypatch.setattr(r_mod, "MAX_DOWNLOAD_ALL_BYTES", 1000)
+    monkeypatch.setattr(r_mod, "download_buffer", spy)
+    r = post(client, u, [a["id"]])
+    assert r.status_code == 413 and "too large" in r.json()["detail"] and reads == []
+    assert r_mod._active_downloads == {}  # slot freed after the error
 
 
-async def test_download_all_every_file_purged_returns_zero_included_no_crash(
-    db: AsyncIOMotorDatabase, client: TestClient
+async def test_size_falls_back_to_the_gridfs_length(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    doc = await _seed_with_files(db, "ALL-PURGED", part1FilePurged=True, part2FilePurged=True)
-    await db.documents.insert_one(doc)
-
-    resp = client.post("/api/documents/download-all")
-    assert resp.status_code == 200
-    assert resp.headers["X-Included-Count"] == "0"
-    assert resp.headers["X-Skipped-Count"] == "1"
-    # Still a structurally valid (empty) zip, not a broken/corrupt response.
-    zf = zipfile.ZipFile(io.BytesIO(resp.content))
-    assert zf.namelist() == []
+    u = await make_user()
+    a = await make_document(u["_id"])  # no part1Size / part2Size stored
+    monkeypatch.setattr(r_mod, "MAX_DOWNLOAD_ALL_BYTES", len(PART1_BYTES) + len(PART2_BYTES) - 1)
+    assert post(client, u, [a["id"]]).status_code == 413
+    monkeypatch.setattr(r_mod, "MAX_DOWNLOAD_ALL_BYTES", len(PART1_BYTES) + len(PART2_BYTES))
+    assert post(client, u, [a["id"]]).status_code == 200
 
 
-async def test_download_all_skips_doc_when_gridfs_read_fails(
-    db: AsyncIOMotorDatabase, client: TestClient, monkeypatch: pytest.MonkeyPatch
+async def test_second_download_while_one_runs_is_429_and_slot_is_freed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import app.features.documents.router as documents_router
+    u = await make_user()
+    a = await make_document(u["_id"], invoiceNo="SLOW")
+    started, release = threading.Event(), threading.Event()
+    real = r_mod.download_buffer
 
-    async def _always_fail(file_id: ObjectId) -> bytes:
-        raise RuntimeError("simulated GridFS read failure")
+    async def slow(file_id: ObjectId) -> bytes:
+        started.set()
+        while not release.is_set():
+            await r_mod.asyncio.sleep(0.02)
+        return await real(file_id)
 
-    monkeypatch.setattr(documents_router, "download_buffer", _always_fail)
+    monkeypatch.setattr(r_mod, "download_buffer", slow)
+    first: list[Any] = []
+    t = threading.Thread(target=lambda: first.append(post(client, u, [a["id"]])))
+    t.start()
+    assert started.wait(10)
+    assert post(client, u, [a["id"]]).status_code == 429
+    release.set()
+    t.join(20)
+    assert first[0].status_code == 200
+    assert r_mod._active_downloads == {}
+    monkeypatch.setattr(r_mod, "download_buffer", real)
+    assert post(client, u, [a["id"]]).status_code == 200  # slot is free again
 
-    doc = await _seed_with_files(db, "READ-FAILS")
-    await db.documents.insert_one(doc)
 
-    resp = client.post("/api/documents/download-all")
-    assert resp.status_code == 200
-    assert resp.headers["X-Included-Count"] == "0"
-    assert resp.headers["X-Skipped-Count"] == "1"
-
-
-async def test_download_all_respects_current_page_only(
-    db: AsyncIOMotorDatabase, client: TestClient
+async def test_slot_is_freed_when_building_the_zip_fails(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    docs = [await _seed_with_files(db, f"PAGE-DOC-{i}") for i in range(3)]
-    await db.documents.insert_many(docs)
+    u = await make_user()
+    a = await make_document(u["_id"])
 
-    resp = client.post("/api/documents/download-all", params={"page": 1, "limit": 2})
-    assert resp.status_code == 200
-    assert resp.headers["X-Included-Count"] == "2"
+    def broken_mkstemp(**_: Any) -> Any:
+        raise OSError("disk full")
 
-    resp2 = client.post("/api/documents/download-all", params={"page": 2, "limit": 2})
-    assert resp2.status_code == 200
-    assert resp2.headers["X-Included-Count"] == "1"
+    monkeypatch.setattr(r_mod.tempfile, "mkstemp", broken_mkstemp)
+    assert post(client, u, [a["id"]]).status_code == 500
+    assert r_mod._active_downloads == {}
 
 
-async def test_download_all_is_isolated_to_the_owning_user(
-    db: AsyncIOMotorDatabase, client: TestClient
+async def test_temp_file_is_removed_after_the_download(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    other_users_doc = await _seed_with_files(db, "OTHER-USER-DOC", userId=_OTHER_USER_ID)
-    await db.documents.insert_one(other_users_doc)
+    u = await make_user()
+    a = await make_document(u["_id"])
+    paths: list[str] = []
+    real = r_mod.tempfile.mkstemp
 
-    resp = client.post("/api/documents/download-all")
-    assert resp.status_code == 200
-    assert resp.headers["X-Included-Count"] == "0"
+    def spy(**kwargs: Any) -> Any:
+        fd, path = real(**kwargs)
+        paths.append(path)
+        return fd, path
 
-    zf = zipfile.ZipFile(io.BytesIO(resp.content))
-    assert zf.namelist() == []
+    monkeypatch.setattr(r_mod.tempfile, "mkstemp", spy)
+    assert post(client, u, [a["id"]]).status_code == 200
+    assert len(paths) == 1 and not os.path.exists(paths[0])
+
+
+async def test_audit_row_is_written_and_a_failing_audit_does_not_fail_the_download(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    u = await make_user()
+    a = await make_document(u["_id"])
+    gone = str(ObjectId())
+    assert post(client, u, [a["id"], gone]).status_code == 200
+    row = await current_db().auditlogs.find_one(
+        {"action": "documents_download_all", "userId": u["_id"]}
+    )
+    assert row is not None
+    assert row["context"] == {"requested": 2, "included": 1, "skipped": 1}
+
+    async def boom(*_: Any, **__: Any) -> None:
+        raise RuntimeError("audit down")
+
+    monkeypatch.setattr(r_mod, "log_action", boom)
+    r = post(client, u, [a["id"]])
+    assert r.status_code == 200 and r.headers["X-Included-Count"] == "1"

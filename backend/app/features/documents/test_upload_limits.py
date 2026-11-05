@@ -201,14 +201,20 @@ async def test_legacy_documents_with_hostile_stored_names_cannot_break_downloads
 
 async def test_zip_entries_cannot_escape_the_extraction_folder(client: TestClient) -> None:
     user = await make_user()
-    await make_document(
+    first = await make_document(
         user["_id"],
         invoiceNo="../../../evil",
         part1OriginalFilename="../../../../etc/cron.d/x.jpg",
         part2OriginalFilename="/abs/path/y.jpg",
     )
-    await make_document(user["_id"], invoiceNo="..\\..\\win", part1OriginalFilename="..\\z.jpg")
-    r = client.post("/api/documents/download-all", headers=user["headers"])
+    second = await make_document(
+        user["_id"], invoiceNo="..\\..\\win", part1OriginalFilename="..\\z.jpg"
+    )
+    r = client.post(
+        "/api/documents/download-all",
+        json={"documentIds": [first["id"], second["id"]]},
+        headers=user["headers"],
+    )
     assert r.status_code == 200 and int(r.headers["x-included-count"]) == 2
     names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
     assert len(names) == 4

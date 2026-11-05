@@ -26,7 +26,13 @@ REJECTED = "Your request was not approved. Contact the admin."
 ROUTES: list[tuple[str, str, str, dict[str, Any] | None, str]] = [
     ("GET /documents (list)", "GET", "/api/documents", None, "collection"),
     ("GET /documents/stats", "GET", "/api/documents/stats", None, "collection"),
-    ("POST /documents/download-all", "POST", "/api/documents/download-all", None, "collection"),
+    (
+        "POST /documents/download-all",
+        "POST",
+        "/api/documents/download-all",
+        {"documentIds": []},
+        "collection",
+    ),
     ("GET /auth/me/activity", "GET", "/api/auth/me/activity", None, "collection"),
     ("GET /documents/{id}", "GET", "/api/documents/{id}", None, "id"),
     ("GET /documents/{id}/download/part1", "GET", "/api/documents/{id}/download/part1", None, "id"),
@@ -153,14 +159,14 @@ async def test_list_shows_only_own_documents(client: TestClient) -> None:
 @pytest.mark.parametrize(
     "query",
     [
-        "invoiceNo=B-INV-1",
-        "invoiceNo=B-",
-        "invoiceNo=.*",  # regex metacharacters are escaped, so this cannot match everything
-        "consigneeCode=777",
-        "date=2026",
+        "search=B-INV-1",
+        "search=B-",
+        "search=.*",  # regex metacharacters are escaped, so this cannot match everything
+        "search=777",
+        "date=2026-01-01",
         "range=year",
         "userId=OTHER",  # unknown param must be ignored, never trusted
-        "invoiceNo[$ne]=zzz",
+        "search[$ne]=zzz",
         "limit=100&page=1&userId=OTHER",
     ],
 )
@@ -189,9 +195,13 @@ async def test_stats_count_only_own_documents(client: TestClient) -> None:
 
 async def test_download_all_zip_contains_only_own_documents(client: TestClient) -> None:
     a, b = await make_user(), await make_user()
-    await make_document(a["_id"], invoiceNo="A-INV-1")
-    await make_document(b["_id"], invoiceNo="B-INV-1")
-    r = client.post("/api/documents/download-all", headers=a["headers"])
+    mine = await make_document(a["_id"], invoiceNo="A-INV-1")
+    theirs = await make_document(b["_id"], invoiceNo="B-INV-1")
+    r = client.post(
+        "/api/documents/download-all",
+        json={"documentIds": [mine["id"], theirs["id"]]},  # B's id is requested too
+        headers=a["headers"],
+    )
     assert r.status_code == 200 and r.headers["x-included-count"] == "1"
     names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
     assert names and all(n.startswith("A-INV-1/") for n in names)
@@ -326,7 +336,11 @@ async def test_legacy_soft_deleted_documents_are_treated_as_not_found(client: Te
     items = client.get("/api/documents", headers=owner["headers"]).json()["items"]
     assert {i["id"] for i in items} == {live["id"]}
     assert client.get("/api/documents/stats", headers=owner["headers"]).json()["total"] == 1
-    zipped = client.post("/api/documents/download-all", headers=owner["headers"])
+    zipped = client.post(
+        "/api/documents/download-all",
+        json={"documentIds": [ghost["id"], live["id"]]},
+        headers=owner["headers"],
+    )
     assert not any("GHOST-1" in n for n in zipfile.ZipFile(io.BytesIO(zipped.content)).namelist())
 
 

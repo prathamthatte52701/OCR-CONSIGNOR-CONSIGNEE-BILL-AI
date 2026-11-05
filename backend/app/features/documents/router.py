@@ -5,13 +5,15 @@ Per-user data isolation on every query - every filter includes userId, malformed
 app.features.admin.router - admin-only now, not user-facing."""
 
 import asyncio
-import io
 import logging
-import re
+import os
+import tempfile
+import time
 import uuid
 import zipfile
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from bson import ObjectId
@@ -25,8 +27,9 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from starlette.background import BackgroundTask
 
 from app.core.audit_log import log_action
 from app.core.database import get_database
@@ -45,12 +48,23 @@ from app.features.documents.file_purge import (
     best_effort_purge_files,
     purge_parts,
 )
-from app.features.documents.gridfs_service import delete_file, download_buffer, upload_buffer
+from app.features.documents.gridfs_service import (
+    delete_file,
+    download_buffer,
+    get_file_length,
+    upload_buffer,
+)
+from app.features.documents.list_query import (
+    TEXT_COLLATION,
+    build_list_query,
+    sorted_page_pipeline,
+)
 from app.features.documents.processing import run_full_pipeline
 from app.features.documents.review_warnings import review_warnings
 from app.features.documents.schemas import (
     CorrectRequest,
     DocumentListResponse,
+    DownloadAllRequest,
     StatsResponse,
     UploadResponse,
 )
@@ -409,117 +423,203 @@ async def bulk_upload_documents(
     return {"results": results}
 
 
-def _upload_range_start_utc(range_key: str, now: datetime) -> datetime:
-    """Start of the UTC "upload date" bucket for `range_key` (today/week/month/year),
-    evaluated against `now` (must be tz-aware UTC). Week starts Monday. No upper bound is
-    needed: createdAt is always <= the instant the query runs, so an open-ended $gte is
-    equivalent to a [start, now) window without racing the clock between capturing `now`
-    and executing the query."""
-    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    if range_key == "today":
-        return start_of_day
-    if range_key == "week":
-        return start_of_day - timedelta(days=now.weekday())  # Monday == weekday() 0
-    if range_key == "month":
-        return start_of_day.replace(day=1)
-    if range_key == "year":
-        return start_of_day.replace(month=1, day=1)
-    raise ValueError(f"Unknown range: {range_key}")  # unreachable - Query() pattern validates first
-
-
-def _build_list_query(
-    current_user: CurrentUser,
-    invoice_no: str | None,
-    consignee_code: str | None,
-    date: str | None,
-    date_range: str | None,
-) -> dict[str, Any]:
-    query: dict[str, Any] = {"userId": current_user.id, "isDeleted": {"$ne": True}}
-    if invoice_no:
-        query["invoiceNo"] = {"$regex": re.escape(invoice_no), "$options": "i"}
-    if consignee_code:
-        query["consigneeCode"] = {"$regex": re.escape(consignee_code), "$options": "i"}
-    if date:
-        query["challanDate"] = {"$regex": re.escape(date)}
-    if date_range:
-        query["createdAt"] = {"$gte": _upload_range_start_utc(date_range, datetime.now(UTC))}
-    return query
-
-
 @router.get("", response_model=DocumentListResponse)
 async def list_documents(
     current_user: CurrentUser = Depends(get_current_user),
-    invoice_no: str | None = Query(None, alias="invoiceNo"),
-    consignee_code: str | None = Query(None, alias="consigneeCode"),
+    search: str | None = Query(None),
     date: str | None = Query(None),
+    month: str | None = Query(None),
     date_range: str | None = Query(None, alias="range", pattern="^(today|week|month|year)$"),
+    needs_review: bool = Query(False, alias="needsReview"),
+    sort: (
+        Literal[
+            "invoiceNo", "consigneeCode", "consignee", "challanDate", "uploadStatus", "createdAt"
+        ]
+        | None
+    ) = Query(None),
+    order: Literal["asc", "desc"] | None = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(30, ge=1, le=100),
 ) -> DocumentListResponse:
     db = get_database()
-    query = _build_list_query(current_user, invoice_no, consignee_code, date, date_range)
-
+    query = build_list_query(
+        current_user.id,
+        search=search,
+        day=date,
+        month=month,
+        date_range=date_range,
+        needs_review=needs_review,
+    )
     total = await db.documents.count_documents(query)
-    cursor = db.documents.find(query).sort("createdAt", -1).skip((page - 1) * limit).limit(limit)
+    skip = (page - 1) * limit
+    cursor: Any
+    if sort is None and order is None:
+        cursor = db.documents.find(query).sort("createdAt", -1).skip(skip).limit(limit)
+    else:
+        cursor = db.documents.aggregate(
+            sorted_page_pipeline(
+                query, sort or "createdAt", -1 if order == "desc" else 1, skip, limit
+            ),
+            allowDiskUse=True,
+            collation=TEXT_COLLATION,
+        )
     items = [_serialize_document(doc) async for doc in cursor]
     return DocumentListResponse(items=items, total=total, page=page, limit=limit)
 
 
+MAX_DOWNLOAD_ALL_IDS = 30
+MAX_DOWNLOAD_ALL_BYTES = 100 * 1024 * 1024
+DOWNLOAD_SLOT_TIMEOUT_SECONDS = 15 * 60  # a crashed run must not block the user forever
+_active_downloads: dict[ObjectId, float] = {}
+
+
+async def _stored_size(doc: dict[str, Any], part: str) -> int:
+    """Stored size of one part from metadata; GridFS length when the row has none."""
+    size = doc.get(f"{part}Size")
+    if isinstance(size, int) and size > 0:
+        return size
+    try:
+        return await get_file_length(doc[f"{part}GridFsFileId"])
+    except Exception:  # noqa: BLE001 - unreadable here -> skipped later when it is read
+        return 0
+
+
 @router.post("/download-all")
 async def download_all(
-    current_user: CurrentUser = Depends(get_current_user),
-    invoice_no: str | None = Query(None, alias="invoiceNo"),
-    consignee_code: str | None = Query(None, alias="consigneeCode"),
-    date: str | None = Query(None),
-    date_range: str | None = Query(None, alias="range", pattern="^(today|week|month|year)$"),
-    page: int = Query(1, ge=1),
-    limit: int = Query(30, ge=1, le=100),
-) -> Response:
-    """Zips up the original Part1+Part2 files for exactly the current page of `list_documents`
-    (same filters, same skip/limit) - not the whole filtered set, not other pages. Any document
-    with a purged file, a missing GridFS id, or a download that raises is skipped entirely
-    (never a partial per-document zip entry) so one bad file can't 500 the whole export."""
-    db = get_database()
-    query = _build_list_query(current_user, invoice_no, consignee_code, date, date_range)
-    cursor = db.documents.find(query).sort("createdAt", -1).skip((page - 1) * limit).limit(limit)
-    docs = [doc async for doc in cursor]
+    body: DownloadAllRequest, current_user: CurrentUser = Depends(get_current_user)
+) -> StreamingResponse:
+    """Zips the original Part 1 + Part 2 files of exactly the requested documents (the ids the
+    page is showing). Ids that are not this user's, deleted, purged, without a file id or
+    unreadable are skipped and counted - a manipulated id list can only skip an entry, never
+    put another user's file in the zip. Limits: MAX_DOWNLOAD_ALL_IDS ids, MAX_DOWNLOAD_ALL_BYTES
+    of stored originals (from metadata, before any read), one running download per user. The zip
+    is built in a temp file one file at a time and streamed back."""
+    if len(body.document_ids) > MAX_DOWNLOAD_ALL_IDS:
+        raise HTTPException(
+            status_code=400, detail=f"Select at most {MAX_DOWNLOAD_ALL_IDS} documents."
+        )
+    ids: list[ObjectId] = []
+    for raw in dict.fromkeys(body.document_ids):  # de-duplicated, order kept
+        if not is_valid_object_id(raw):
+            raise HTTPException(status_code=400, detail="Invalid document id.")
+        ids.append(ObjectId(raw))
 
-    included = 0
-    skipped = 0
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for doc in docs:
-            if doc.get("part1FilePurged") or doc.get("part2FilePurged"):
-                skipped += 1
-                continue
-            part1_file_id = doc.get("part1GridFsFileId")
-            part2_file_id = doc.get("part2GridFsFileId")
-            if not part1_file_id or not part2_file_id:
-                skipped += 1
-                continue
+    user_id = current_user.id
+    # Check-and-add with no await in between: race-free within one event loop.
+    now = time.monotonic()
+    started = _active_downloads.get(user_id)
+    if started is not None and now - started < DOWNLOAD_SLOT_TIMEOUT_SECONDS:
+        raise HTTPException(status_code=429, detail="A download is already running.")
+    _active_downloads[user_id] = now
+    tmp_path: str | None = None
+    released = False
+
+    def cleanup() -> None:
+        # Idempotent: runs from the generator's finally AND a BackgroundTask.
+        nonlocal released
+        if released:
+            return
+        released = True
+        if _active_downloads.get(user_id) == now:  # never free a newer run's slot
+            del _active_downloads[user_id]
+        if tmp_path:
             try:
-                part1_data = await download_buffer(part1_file_id)
-                part2_data = await download_buffer(part2_file_id)
-            except Exception:  # noqa: BLE001 - one unreadable file must not 500 the whole zip
-                skipped += 1
-                continue
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
-            # Both come from untrusted text (the OCR'd invoice number, the uploaded filename):
-            # sanitised so an entry can never contain "../" or an absolute path (zip slip).
-            folder = safe_filename(doc.get("invoiceNo"), str(doc["_id"]))
-            part1_name = safe_filename(doc.get("part1OriginalFilename"), "part1")
-            part2_name = safe_filename(doc.get("part2OriginalFilename"), "part2")
-            zf.writestr(f"{folder}/part1_{part1_name}", part1_data)
-            zf.writestr(f"{folder}/part2_{part2_name}", part2_data)
-            included += 1
+    try:
+        db = get_database()
+        found = {
+            d["_id"]: d
+            async for d in db.documents.find(
+                {"_id": {"$in": ids}, "userId": user_id, "isDeleted": {"$ne": True}}
+            )
+        }
+        usable = [
+            d
+            for d in (found.get(i) for i in ids)
+            if d
+            and not (d.get("part1FilePurged") or d.get("part2FilePurged"))
+            and d.get("part1GridFsFileId")
+            and d.get("part2GridFsFileId")
+        ]
+        total_bytes = 0
+        for d in usable:
+            total_bytes += await _stored_size(d, "part1") + await _stored_size(d, "part2")
+        if total_bytes > MAX_DOWNLOAD_ALL_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="The selected files are too large to download together "
+                f"(limit {MAX_DOWNLOAD_ALL_BYTES // (1024 * 1024)} MB). Select fewer documents.",
+            )
 
-    return Response(
-        content=buffer.getvalue(),
+        included = 0
+        skipped = len(ids) - len(usable)
+        used_folders: set[str] = set()
+        fd, tmp_path = tempfile.mkstemp(suffix=".zip", prefix="download-all-")
+        os.close(fd)
+        zf = await asyncio.to_thread(zipfile.ZipFile, tmp_path, "w", zipfile.ZIP_DEFLATED)
+        try:
+            for doc in usable:
+                try:
+                    part1_data = await download_buffer(doc["part1GridFsFileId"])
+                    part2_data = await download_buffer(doc["part2GridFsFileId"])
+                except Exception:  # noqa: BLE001 - one unreadable file must not fail the zip
+                    skipped += 1
+                    continue
+                # Both come from untrusted text (OCR'd invoice number, uploaded filename):
+                # sanitised so an entry can never contain "../" or an absolute path (zip slip).
+                base = safe_filename(doc.get("invoiceNo"), str(doc["_id"]))
+                folder, n = base, 1
+                while folder.lower() in used_folders:  # two documents, same invoice number
+                    n += 1
+                    folder = f"{base}-{n}"
+                used_folders.add(folder.lower())
+                name1 = safe_filename(doc.get("part1OriginalFilename"), "part1")
+                name2 = safe_filename(doc.get("part2OriginalFilename"), "part2")
+                await asyncio.to_thread(zf.writestr, f"{folder}/part1_{name1}", part1_data)
+                await asyncio.to_thread(zf.writestr, f"{folder}/part2_{name2}", part2_data)
+                del part1_data, part2_data
+                included += 1
+        finally:
+            await asyncio.to_thread(zf.close)
+        zip_size = os.path.getsize(tmp_path)
+
+        try:
+            await log_action(
+                user_id,
+                "documents_download_all",
+                {"requested": len(body.document_ids), "included": included, "skipped": skipped},
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed audit write must not fail the download
+            logger.error("download-all audit failed: class=%s", type(exc).__name__)
+    except BaseException:
+        cleanup()
+        raise
+
+    path = tmp_path
+
+    async def stream() -> AsyncIterator[bytes]:
+        # The finally runs when Starlette closes the generator (also on client disconnect); the
+        # BackgroundTask below covers a body that is never iterated at all.
+        try:
+            with open(path, "rb") as f:
+                while chunk := await asyncio.to_thread(f.read, 64 * 1024):
+                    yield chunk
+        finally:
+            cleanup()
+
+    return StreamingResponse(
+        stream(),
         media_type="application/zip",
+        background=BackgroundTask(cleanup),
         headers={
             "Content-Disposition": 'attachment; filename="documents.zip"',
+            "Content-Length": str(zip_size),
             "X-Included-Count": str(included),
             "X-Skipped-Count": str(skipped),
+            "X-Total-Count": str(len(body.document_ids)),
         },
     )
 

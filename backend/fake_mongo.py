@@ -8,8 +8,9 @@ not implement raises AttributeError so a test never silently passes on unsupport
 Supported: find_one/find(sort, skip, limit, projection)/insert_one/insert_many/update_one/
 update_many/delete_one/delete_many/count_documents/create_index(unique)/drop_index/
 index_information; query operators $in $nin $gt $gte $lt $lte $ne $exists $regex($options) $or
-$and; update operators $set $inc $unset $setOnInsert; a GridFS bucket (upload_from_stream,
-open_download_stream, delete).
+$and; update operators $set $inc $unset $setOnInsert; aggregate() with $match $addFields $sort
+$skip $limit $project and the expression operators listed at _eval; a GridFS bucket
+(upload_from_stream, open_download_stream, delete).
 """
 
 import copy
@@ -205,6 +206,117 @@ def _project(doc: dict[str, Any], projection: dict[str, Any] | None) -> dict[str
     return out
 
 
+# ---------------------------------------------------------------------------
+# Aggregation: only the stages / expression operators the app uses
+# ---------------------------------------------------------------------------
+
+
+def _type_name(value: Any) -> str:
+    if value is _MISSING:
+        return "missing"
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int):
+        return "int"
+    if isinstance(value, float):
+        return "double"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, datetime):
+        return "date"
+    if isinstance(value, ObjectId):
+        return "objectId"
+    return "object"
+
+
+def _eval(expr: Any, doc: dict[str, Any], env: dict[str, Any]) -> Any:
+    """Expression operators: $cond $eq $ne $and $type $regexMatch $regexFind $let $concat
+    $substrCP $strLenCP $arrayElemAt, field paths ("$a.b"), variables ("$$v.x"), literals."""
+    if isinstance(expr, str) and expr.startswith("$$"):
+        name, _, rest = expr[2:].partition(".")
+        value = env[name]
+        return _get_path(value, rest) if rest else value
+    if isinstance(expr, str) and expr.startswith("$"):
+        value = _get_path(doc, expr[1:])
+        return None if value is _MISSING else value
+    if isinstance(expr, list):
+        return [_eval(e, doc, env) for e in expr]
+    if not isinstance(expr, dict):
+        return expr
+    ((op, arg),) = expr.items()
+    if op == "$cond":
+        test, yes, no = arg
+        return _eval(yes if _eval(test, doc, env) else no, doc, env)
+    if op == "$eq":
+        left, right = (_eval(a, doc, env) for a in arg)
+        return bool(left == right)
+    if op == "$ne":
+        left, right = (_eval(a, doc, env) for a in arg)
+        return bool(left != right)
+    if op == "$and":
+        return all(_eval(a, doc, env) for a in arg)
+    if op == "$type":
+        if isinstance(arg, str) and arg.startswith("$") and not arg.startswith("$$"):
+            return _type_name(_get_path(doc, arg[1:]))
+        return _type_name(_eval(arg, doc, env))
+    if op == "$concat":
+        return "".join(_eval(a, doc, env) for a in arg)
+    if op == "$strLenCP":
+        return len(_eval(arg, doc, env))
+    if op == "$substrCP":
+        text, start, length = (_eval(a, doc, env) for a in arg)
+        return text[start : start + length]
+    if op == "$arrayElemAt":
+        items, index = (_eval(a, doc, env) for a in arg)
+        return items[index]
+    if op in ("$regexMatch", "$regexFind"):
+        found = re.search(arg["regex"], _eval(arg["input"], doc, env))
+        if op == "$regexMatch":
+            return found is not None
+        if found is None:
+            return None
+        return {"match": found.group(0), "captures": list(found.groups())}
+    if op == "$let":
+        inner = {**env, **{k: _eval(v, doc, env) for k, v in arg["vars"].items()}}
+        return _eval(arg["in"], doc, inner)
+    raise AttributeError(f"fake_mongo: unsupported aggregation operator {op}")
+
+
+def _run_pipeline(
+    docs: list[dict[str, Any]], pipeline: list[dict[str, Any]], case_insensitive: bool
+) -> list[dict[str, Any]]:
+    rows = [copy.deepcopy(d) for d in docs]
+    for stage in pipeline:
+        ((name, arg),) = stage.items()
+        if name == "$match":
+            rows = [d for d in rows if _matches(d, arg)]
+        elif name == "$addFields":
+            for d in rows:
+                for field, expr in arg.items():
+                    d[field] = _eval(expr, d, {})
+        elif name == "$sort":
+            for key, direction in reversed(list(arg.items())):
+
+                def sort_key(d: dict[str, Any], key: str = key) -> tuple[int, Any]:
+                    value = _get_path(d, key)
+                    if case_insensitive and isinstance(value, str):
+                        value = value.lower()
+                    return _cmp_key(value)
+
+                rows.sort(key=sort_key, reverse=direction < 0)
+        elif name == "$skip":
+            rows = rows[arg:]
+        elif name == "$limit":
+            rows = rows[:arg]
+        elif name == "$project":
+            rows = [_project(d, arg) for d in rows]
+        else:
+            raise AttributeError(f"fake_mongo: unsupported pipeline stage {name}")
+    return rows
+
+
 class InsertOneResult:
     def __init__(self, inserted_id: Any) -> None:
         self.inserted_id = inserted_id
@@ -390,6 +502,13 @@ class _SyncCollection:
     def count_documents(self, filt: dict[str, Any]) -> int:
         return sum(1 for d in self._docs if _matches(d, filt))
 
+    def aggregate(
+        self, pipeline: list[dict[str, Any]], collation: Any = None, **_: Any
+    ) -> _SyncCursor:
+        # A collation with strength 2 (the only one the app uses) = case-insensitive text sort.
+        rows = _run_pipeline(self._docs, pipeline, collation is not None)
+        return _SyncCursor(rows, None)
+
     # -- indexes
     def create_index(self, keys: Any, unique: bool = False, **_: Any) -> str:
         key_list = [(keys, 1)] if isinstance(keys, str) else [(k, int(v)) for k, v in keys]
@@ -479,6 +598,9 @@ class _AsyncCollection:
 
     async def count_documents(self, filt: dict[str, Any]) -> int:
         return self._sync.count_documents(filt)
+
+    def aggregate(self, *args: Any, **kwargs: Any) -> _AsyncCursor:
+        return _AsyncCursor(self._sync.aggregate(*args, **kwargs))
 
     async def create_index(self, *args: Any, **kwargs: Any) -> str:
         return self._sync.create_index(*args, **kwargs)
@@ -570,6 +692,7 @@ class FakeSyncMongoClient:
 class _DownloadStream:
     def __init__(self, data: bytes) -> None:
         self._data = data
+        self.length = len(data)
 
     async def read(self) -> bytes:
         return self._data
