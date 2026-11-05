@@ -148,8 +148,18 @@ def test_row_missing_its_empty_sr_cell_is_read_from_the_hsn_cell() -> None:
         _tds("Total Basic Amount", "5,000.00"),
     )
     (item,) = build_line_items(find_item_rows(parse_table_rows(html)))
-    assert (item["description"], item["hsnSac"], item["basic"], item["quantity"], item["amount"]) == (
-        "HOB ED2473(126999)", "998729", "5,000.00", "1", "5,000.00",
+    assert (
+        item["description"],
+        item["hsnSac"],
+        item["basic"],
+        item["quantity"],
+        item["amount"],
+    ) == (
+        "HOB ED2473(126999)",
+        "998729",
+        "5,000.00",
+        "1",
+        "5,000.00",
     )
 
 

@@ -159,7 +159,9 @@ def _read_row_from_hsn_cell(row: Row) -> dict[str, str | None] | None:
     if hsn_index is None:
         return None
     before = texts[:hsn_index]
-    after = [t for t in texts[hsn_index + 1 :] if not any(k in t.upper() for k in _SUMMARY_KEYWORDS)]
+    after = [
+        t for t in texts[hsn_index + 1 :] if not any(k in t.upper() for k in _SUMMARY_KEYWORDS)
+    ]
     described = [t for t in before if re.search(r"[A-Za-z]", t)]
     return {
         "srNo": next((t for t in before if _SR_CELL_RE.match(t)), None),
