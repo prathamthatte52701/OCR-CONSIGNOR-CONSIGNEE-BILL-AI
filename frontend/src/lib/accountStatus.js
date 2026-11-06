@@ -40,12 +40,20 @@ export function stashAccountDetail(detail) {
     /* storage unavailable - the login page shows no notice */
   }
 }
-export function takeStashedAccountNotice() {
+// Read without removing (StrictMode runs initializers twice in dev); the login page clears it
+// after mount with clearStashedAccountNotice().
+export function peekStashedAccountNotice() {
   try {
     const raw = sessionStorage.getItem(STORAGE_KEY);
-    sessionStorage.removeItem(STORAGE_KEY);
     return raw ? accountNotice(JSON.parse(raw)) : null;
   } catch {
     return null;
+  }
+}
+export function clearStashedAccountNotice() {
+  try {
+    sessionStorage.removeItem(STORAGE_KEY);
+  } catch {
+    /* storage unavailable - nothing to clear */
   }
 }

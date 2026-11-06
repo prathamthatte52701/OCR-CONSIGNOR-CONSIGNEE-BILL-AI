@@ -1,5 +1,9 @@
-import { useState } from "react";
-import { accountNotice, takeStashedAccountNotice } from "../lib/accountStatus";
+import { useEffect, useState } from "react";
+import {
+  accountNotice,
+  clearStashedAccountNotice,
+  peekStashedAccountNotice,
+} from "../lib/accountStatus";
 import { Link, useSearchParams } from "react-router-dom";
 import { useLogin } from "../hooks/useAuth";
 import PasswordInput from "../components/PasswordInput";
@@ -30,7 +34,10 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const login = useLogin();
   // Set when a 403 on a normal route ended the session; read once, then removed.
-  const [stashed] = useState(takeStashedAccountNotice);
+  const [stashed] = useState(peekStashedAccountNotice);
+  useEffect(() => {
+    clearStashedAccountNotice(); // one-time: gone after mount (safe to run twice)
+  }, []);
 
   const handleSubmit = (e) => {
     e.preventDefault();
