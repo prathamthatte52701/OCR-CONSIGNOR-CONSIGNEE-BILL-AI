@@ -21,6 +21,7 @@ from app.main import app
 
 PENDING = "Waiting for admin approval."
 REJECTED = "Your request was not approved. Contact the admin."
+REVOKED = "Your access was removed. Contact the admin."
 PASSWORD = "Str0ng!Passw0rd"  # noqa: S105 - test-only value
 
 
@@ -107,7 +108,7 @@ async def test_pending_login_blocked_without_token(
 ) -> None:
     user = await _make_user(db, _cleanup, status="pending")
     r = _login(client, user)
-    assert r.status_code == 403 and r.json()["detail"] == PENDING
+    assert r.status_code == 403 and r.json()["detail"]["message"] == PENDING
     assert "token" not in r.text
 
 
@@ -116,7 +117,7 @@ async def test_rejected_login_blocked(
 ) -> None:
     user = await _make_user(db, _cleanup, status="rejected")
     r = _login(client, user)
-    assert r.status_code == 403 and r.json()["detail"] == REJECTED
+    assert r.status_code == 403 and r.json()["detail"]["message"] == REJECTED
 
 
 async def test_wrong_password_never_reveals_status(
@@ -148,7 +149,7 @@ async def test_old_token_blocked_on_protected_routes(
     headers = {"Authorization": f"Bearer {sign_token(str(user['_id']), 0, 'user')}"}
     for path in ("/api/auth/me", "/api/documents"):
         r = client.get(path, headers=headers)
-        assert r.status_code == 403 and r.json()["detail"] == message, path
+        assert r.status_code == 403 and r.json()["detail"]["message"] == message, path
 
 
 async def test_status_change_takes_effect_on_existing_token(
@@ -191,7 +192,7 @@ async def test_admin_reject_revokes_existing_token(
     # tokenVersion was bumped AND status is checked first -> old token answers 403 "rejected".
     assert client.get("/api/auth/me", headers=headers).status_code == 403
     login = _login(client, user)
-    assert login.status_code == 403 and login.json()["detail"] == REJECTED
+    assert login.status_code == 403 and login.json()["detail"]["message"] == REVOKED
     await db.auditlogs.delete_many({"userId": admin.id})
 
 
@@ -201,7 +202,7 @@ async def test_admin_accounts_cannot_be_rejected(
     other_admin = await _make_user(db, _cleanup, status="approved", role="admin")
     _act_as_admin(_cleanup)
     r = client.post(f"/api/admin/users/{other_admin['_id']}/reject")
-    assert r.status_code == 400
+    assert r.status_code == 403
     stored = await db.users.find_one({"_id": other_admin["_id"]})
     assert stored is not None and stored["status"] == "approved"
 
@@ -335,3 +336,132 @@ async def test_signup_cannot_self_assign_status_or_role(
     assert created is not None
     _cleanup.append(created["_id"])
     assert created["status"] == "pending" and created["role"] == "user"
+
+
+# ------------------------------------------------------------------ Feature 10
+
+
+def _detail(resp: Any) -> dict[str, Any]:
+    assert resp.status_code == 403
+    detail = resp.json()["detail"]
+    assert isinstance(detail, dict)
+    return detail
+
+
+async def test_reject_reason_decisions_and_structured_login_403(client: TestClient) -> None:
+    from testkit import current_db, make_user
+
+    admin = await make_user(role="admin")
+    pending = await make_user(status="pending")
+    approved = await make_user()
+    assert _login(client, pending).status_code == 403
+
+    d = _detail(_login(client, pending))
+    assert d["code"] == "ACCOUNT_PENDING" and d["decidedAt"] is None and d["requestedAt"]
+
+    too_long = client.post(
+        f"/api/admin/users/{pending['_id']}/reject",
+        json={"reason": "x" * 301},
+        headers=admin["headers"],
+    )
+    assert too_long.status_code == 422
+    ok = client.post(
+        f"/api/admin/users/{pending['_id']}/reject",
+        json={"reason": "  Duplicate account  "},
+        headers=admin["headers"],
+    )
+    assert ok.status_code == 200 and ok.json()["decision"] == "rejected"
+    d = _detail(_login(client, pending))
+    assert d["code"] == "ACCOUNT_REJECTED" and d["reason"] == "Duplicate account"
+    assert d["decidedAt"] and d["requestedAt"]
+
+    # a missing body still works, and revoking an approved user is a "revoked" decision
+    revoked = client.post(f"/api/admin/users/{approved['_id']}/reject", headers=admin["headers"])
+    assert revoked.status_code == 200 and revoked.json()["decision"] == "revoked"
+    d = _detail(_login(client, approved))
+    assert d["code"] == "ACCOUNT_REVOKED" and d["reason"] is None
+    row = await current_db().auditlogs.find_one({"action": "user_rejected"})
+    assert row is not None and "decision" in row["context"]
+
+
+async def test_legacy_rejected_user_has_no_reason_or_date(client: TestClient) -> None:
+    from testkit import make_user
+
+    user = await make_user(status="rejected")  # no decision / decisionReason / decidedAt fields
+    d = _detail(_login(client, user))
+    assert d["code"] == "ACCOUNT_REJECTED"
+    assert d["reason"] is None and d["decidedAt"] is None
+
+
+async def test_just_approved_notice_is_given_once(client: TestClient) -> None:
+    from testkit import current_db, make_user
+
+    admin = await make_user(role="admin")
+    user = await make_user(status="pending")
+    assert _login(client, user).status_code == 403  # pending login must not consume anything
+    approve = client.post(f"/api/admin/users/{user['_id']}/approve", headers=admin["headers"])
+    assert approve.status_code == 200
+
+    wrong = _login(client, user, password="Wr0ng!passw0rd")
+    assert wrong.status_code == 401  # a wrong password does not consume the notice
+    first, second = _login(client, user).json(), _login(client, user).json()
+    assert first["justApproved"] is True and first["approvedAt"]
+    assert second["justApproved"] is False and second["approvedAt"] is None
+
+    again = client.post(f"/api/admin/users/{user['_id']}/approve", headers=admin["headers"])
+    assert again.status_code == 200  # already approved: no new notice
+    assert _login(client, user).json()["justApproved"] is False
+    stored = await current_db().users.find_one({"_id": user["_id"]})
+    assert stored is not None and stored["approvalNoticePending"] is False
+
+
+async def test_admin_cannot_act_on_another_admin(client: TestClient) -> None:
+    from testkit import current_db, make_user
+
+    a, b = await make_user(role="admin"), await make_user(role="admin")
+    plain = await make_user()
+    h, target = a["headers"], f"/api/admin/users/{b['_id']}"
+    msg = "Only that admin can change their own account."
+    calls = [
+        client.patch(target, json={"username": "hacked"}, headers=h),
+        client.delete(target, headers=h),
+        client.post(f"{target}/approve", headers=h),
+        client.post(f"{target}/reject", headers=h),
+        client.post(
+            f"{target}/nuke",
+            json={
+                "password": "x",
+                "confirmPassword": "x",
+                "confirmationPhrase": "x",
+                "olderThanMonths": 9,
+            },
+            headers=h,
+        ),
+    ]
+    for r in calls:
+        assert r.status_code == 403 and r.json()["detail"] == msg
+    stored = await current_db().users.find_one({"_id": b["_id"]})
+    assert stored is not None and stored["username"] == b["username"]
+
+    own = client.patch(f"/api/admin/users/{a['_id']}", json={"username": "mine"}, headers=h)
+    assert own.status_code == 200
+    other = client.patch(f"/api/admin/users/{plain['_id']}", json={"username": "theirs"}, headers=h)
+    assert other.status_code == 200
+
+
+async def test_old_token_gets_structured_403_on_normal_routes(client: TestClient) -> None:
+    from testkit import make_user
+
+    admin = await make_user(role="admin")
+    rejected = await make_user()
+    pending = await make_user(status="pending")
+    client.post(
+        f"/api/admin/users/{rejected['_id']}/reject",
+        json={"reason": "Wrong email"},
+        headers=admin["headers"],
+    )
+    d = _detail(client.get("/api/documents", headers=rejected["headers"]))
+    assert d["code"] == "ACCOUNT_REVOKED" and d["reason"] == "Wrong email"
+    assert _detail(client.get("/api/auth/me", headers=pending["headers"]))["code"] == (
+        "ACCOUNT_PENDING"
+    )

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { accountNotice, takeStashedAccountNotice } from "../lib/accountStatus";
 import { Link, useSearchParams } from "react-router-dom";
 import { useLogin } from "../hooks/useAuth";
 import PasswordInput from "../components/PasswordInput";
@@ -6,8 +7,6 @@ import PasswordInput from "../components/PasswordInput";
 // Fixed texts only - the notice comes from a URL key, never from free text in the URL.
 const NOTICES = {
   signup: { tone: "info", text: "Account created. Waiting for admin approval." },
-  pending: { tone: "warn", text: "Waiting for admin approval." },
-  rejected: { tone: "danger", text: "Your request was not approved. Contact the admin." },
 };
 
 const TONE_CLASSES = {
@@ -16,12 +15,12 @@ const TONE_CLASSES = {
   danger: "border-danger/40 bg-danger/10 text-danger",
 };
 
-function loginNotice(login, searchParams) {
+function loginNotice(login, searchParams, stashed) {
   if (login.error?.response?.status === 403) {
-    const detail = login.error.response.data?.detail;
-    if (detail === NOTICES.pending.text) return NOTICES.pending;
-    if (detail === NOTICES.rejected.text) return NOTICES.rejected;
+    const notice = accountNotice(login.error.response.data?.detail);
+    if (notice) return notice;
   }
+  if (searchParams.get("notice") === "account") return stashed;
   return NOTICES[searchParams.get("notice")] ?? null;
 }
 
@@ -30,13 +29,15 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const login = useLogin();
+  // Set when a 403 on a normal route ended the session; read once, then removed.
+  const [stashed] = useState(takeStashedAccountNotice);
 
   const handleSubmit = (e) => {
     e.preventDefault();
     login.mutate({ email, password });
   };
 
-  const notice = loginNotice(login, searchParams);
+  const notice = loginNotice(login, searchParams, stashed);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-bg px-4">

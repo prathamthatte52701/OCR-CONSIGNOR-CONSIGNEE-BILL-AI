@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { ShieldAlert } from "lucide-react";
 import { adminAuthApi } from "../api/admin";
 import { useAdminAuth } from "../context/AdminAuthContext";
+import { accountStatusText } from "../lib/accountStatus";
 
 export default function AdminLoginPage() {
   const [email, setEmail] = useState("");
@@ -24,7 +25,7 @@ export default function AdminLoginPage() {
       setAuth(data);
       navigate("/dashboard");
     } catch (err) {
-      toast.error(err.userMessage || "Login failed.");
+      toast.error(accountStatusText(err.response?.data?.detail) || err.userMessage || "Login failed.");
     } finally {
       setBusy(false);
     }

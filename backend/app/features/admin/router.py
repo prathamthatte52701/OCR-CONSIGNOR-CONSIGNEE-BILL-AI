@@ -23,6 +23,7 @@ from app.core.validators import is_valid_email, is_valid_username, normalize_ema
 from app.features.admin.schemas import (
     AdminNukeRequest,
     ListResponse,
+    RejectRequest,
     TelemetryResponse,
     UpdateUserRequest,
     UserListResponse,
@@ -66,6 +67,9 @@ def _serialize_user(user: dict[str, Any]) -> dict[str, Any]:
         "email": user["email"],
         "role": user.get("role", "user"),
         "status": user.get("status", STATUS_APPROVED),
+        "decision": user.get("decision"),
+        "decidedAt": user.get("decidedAt"),
+        "decisionReason": user.get("decisionReason"),
         "createdAt": user.get("createdAt"),
         "updatedAt": user.get("updatedAt"),
     }
@@ -205,7 +209,15 @@ async def list_users(
     )
 
 
-async def _set_user_status(user_id: str, new_status: str, admin: CurrentUser) -> dict[str, Any]:
+def _guard_other_admin(target: dict[str, Any], admin: CurrentUser) -> None:
+    """An admin may not act on another admin's account; only that admin can."""
+    if target.get("role") == "admin" and target["_id"] != admin.id:
+        raise HTTPException(status_code=403, detail="Only that admin can change their own account.")
+
+
+async def _set_user_status(
+    user_id: str, new_status: str, admin: CurrentUser, reason: str | None = None
+) -> dict[str, Any]:
     if not is_valid_object_id(user_id):
         raise HTTPException(status_code=400, detail="Invalid user id.")
     db = get_database()
@@ -214,7 +226,25 @@ async def _set_user_status(user_id: str, new_status: str, admin: CurrentUser) ->
     if user is None:
         raise HTTPException(status_code=404, detail="User not found.")
 
-    update: dict[str, Any] = {"$set": {"status": new_status, "updatedAt": datetime.now(UTC)}}
+    _guard_other_admin(user, admin)
+    now = datetime.now(UTC)
+    previous = user.get("status", STATUS_APPROVED)
+    update: dict[str, Any] = {"$set": {"status": new_status, "updatedAt": now, "decidedAt": now}}
+    decision_audit: dict[str, Any] = {}
+    if new_status == STATUS_APPROVED:
+        update["$set"]["decision"] = "approved"
+        update["$set"]["decisionReason"] = None
+        if previous != STATUS_APPROVED:  # the welcome notice is only for someone who was waiting
+            update["$set"]["approvalNoticePending"] = True
+    else:
+        # approved before (or already revoked) = revoked; a pending request = rejected
+        revoked = previous == STATUS_APPROVED or (
+            previous == STATUS_REJECTED and user.get("decision") == "revoked"
+        )
+        update["$set"]["decision"] = "revoked" if revoked else "rejected"
+        update["$set"]["decisionReason"] = reason
+        update["$set"]["approvalNoticePending"] = False
+        decision_audit = {"decision": update["$set"]["decision"], "reason": reason}
     if new_status == STATUS_REJECTED:
         # Admins (including yourself) can never be locked out this way.
         if user.get("role") == "admin":
@@ -230,7 +260,8 @@ async def _set_user_status(user_id: str, new_status: str, admin: CurrentUser) ->
         {
             "targetUserId": user_id,
             "targetEmail": user["email"],
-            "previous": user.get("status", STATUS_APPROVED),
+            "previous": previous,
+            **decision_audit,
         },
     )
     refreshed = await db.users.find_one({"_id": target_id})
@@ -247,11 +278,15 @@ async def approve_user(
 
 @router.post("/users/{user_id}/reject")
 async def reject_user(
-    user_id: str, current_user: CurrentUser = Depends(require_admin)
+    user_id: str,
+    body: RejectRequest | None = None,
+    current_user: CurrentUser = Depends(require_admin),
 ) -> dict[str, Any]:
     """Reject a pending request OR revoke an approved user - same action: the account is
-    locked out and every issued token dies (tokenVersion bump)."""
-    return await _set_user_status(user_id, STATUS_REJECTED, current_user)
+    locked out and every issued token dies (tokenVersion bump). The optional reason is
+    plain text (trimmed; empty = none)."""
+    reason = ((body.reason if body else None) or "").strip() or None
+    return await _set_user_status(user_id, STATUS_REJECTED, current_user, reason)
 
 
 @router.get("/users/{user_id}")
@@ -277,6 +312,7 @@ async def update_user(
     user = await db.users.find_one({"_id": ObjectId(user_id)})
     if user is None:
         raise HTTPException(status_code=404, detail="User not found.")
+    _guard_other_admin(user, current_user)
 
     updates: dict[str, Any] = {}
     audit: dict[str, Any] = {"userId": user_id}
@@ -338,6 +374,7 @@ async def delete_user(
     user = await db.users.find_one({"_id": target_id})
     if user is None:
         raise HTTPException(status_code=404, detail="User not found.")
+    _guard_other_admin(user, current_user)
 
     docs = await db.documents.find({"userId": target_id}).to_list(length=None)
     for doc in docs:
@@ -368,6 +405,7 @@ async def nuke_user(
     target = await db.users.find_one({"_id": target_id})
     if target is None:
         raise HTTPException(status_code=404, detail="User not found.")
+    _guard_other_admin(target, current_user)
 
     if body.confirmation_phrase != CONFIRMATION_PHRASE_USER_NUKE:
         await log_action(

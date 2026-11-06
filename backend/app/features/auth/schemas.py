@@ -30,6 +30,8 @@ class AuthResponse(CamelModel):
     username: str
     email: str
     role: str
+    just_approved: bool = False
+    approved_at: str | None = None
 
 
 class MeResponse(CamelModel):

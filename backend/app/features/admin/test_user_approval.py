@@ -14,7 +14,7 @@ from app.main import app
 from testkit import current_db
 
 PASSWORD = "Str0ng!Passw0rd"  # noqa: S105 - test-only value
-REJECTED = "Your request was not approved. Contact the admin."
+REVOKED = "Your access was removed. Contact the admin."
 
 
 @pytest.fixture(scope="module")
@@ -106,9 +106,9 @@ async def test_reject_revokes_old_token_and_bumps_version_once(client: TestClien
     # old token is dead (tokenVersion bumped) and, because status is checked first, answers with
     # the clear 403 "not approved" message; a fresh login gets the same 403.
     old = client.get("/api/auth/me", headers=user["headers"])
-    assert old.status_code == 403 and old.json()["detail"] == REJECTED
+    assert old.status_code == 403 and old.json()["detail"]["message"] == REVOKED
     login = _login(client, user)
-    assert login.status_code == 403 and login.json()["detail"] == REJECTED
+    assert login.status_code == 403 and login.json()["detail"]["message"] == REVOKED
     assert "token" not in login.text
     log = await current_db().auditlogs.find_one({"action": "user_rejected"})
     assert log is not None and log["context"]["previous"] == "approved"
@@ -124,9 +124,10 @@ async def test_pending_user_can_be_rejected_directly(client: TestClient) -> None
 async def test_admins_and_the_acting_admin_cannot_be_rejected(client: TestClient) -> None:
     admin = await _make("admin")
     other_admin = await _make("admin")
-    for target in (admin, other_admin):
-        r = client.post(f"/api/admin/users/{target['_id']}/reject", headers=admin["headers"])
-        assert r.status_code == 400
+    own = client.post(f"/api/admin/users/{admin['_id']}/reject", headers=admin["headers"])
+    assert own.status_code == 400
+    other = client.post(f"/api/admin/users/{other_admin['_id']}/reject", headers=admin["headers"])
+    assert other.status_code == 403  # the admin-vs-admin guard answers first
     stored = await current_db().users.find_one({"_id": other_admin["_id"]})
     assert stored is not None and stored["status"] == "approved" and stored["tokenVersion"] == 0
     assert client.get("/api/auth/me", headers=other_admin["headers"]).status_code == 200

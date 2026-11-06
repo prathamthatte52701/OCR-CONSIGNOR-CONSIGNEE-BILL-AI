@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { adminApi } from "../api/admin";
 import ConfirmModal from "../components/ConfirmModal";
+import RejectReasonModal from "../components/RejectReasonModal";
 import LoadingState from "../components/LoadingState";
 import PaginationControls from "../components/PaginationControls";
 import { formatIST } from "../lib/formatDate";
@@ -48,16 +49,6 @@ const ACTION_STYLE = {
 };
 
 const CONFIRM_COPY = {
-  reject: (u) => ({
-    title: "Reject this sign-up?",
-    message: `${u.username} (${u.email}) will not be able to log in. You can re-approve later.`,
-    confirmLabel: "Reject",
-  }),
-  revoke: (u) => ({
-    title: "Revoke access?",
-    message: `${u.username} (${u.email}) will be logged out everywhere and locked out. You can re-approve later.`,
-    confirmLabel: "Revoke",
-  }),
   delete: (u) => ({
     title: "Permanently delete this user?",
     message: `${u.username} (${u.email}) and ALL their documents, files and activity will be permanently deleted. There is no undo.`,
@@ -90,13 +81,13 @@ export default function AdminUsersPage() {
     setPage(1);
   };
 
-  const run = async (user, action) => {
+  const run = async (user, action, reason = null) => {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusyId(user.id);
     try {
       if (action === "approve" || action === "reapprove") await adminApi.approveUser(user.id);
-      else if (action === "reject" || action === "revoke") await adminApi.rejectUser(user.id);
+      else if (action === "reject" || action === "revoke") await adminApi.rejectUser(user.id, reason);
       else await adminApi.deleteUser(user.id);
       toast.success(`${ACTION_LABEL[action]}: ${user.username}`);
       load();
@@ -112,14 +103,15 @@ export default function AdminUsersPage() {
   const onAction = (event, user, action) => {
     event.preventDefault();
     event.stopPropagation();
-    if (CONFIRM_COPY[action]) setConfirm({ user, action });
+    if (CONFIRM_COPY[action] || action === "reject" || action === "revoke") setConfirm({ user, action });
     else run(user, action);
   };
 
   if (loading && !data) return <LoadingState message="Loading users..." />;
 
   const totalPages = Math.max(1, Math.ceil((data?.total ?? 0) / LIMIT));
-  const copy = confirm ? CONFIRM_COPY[confirm.action](confirm.user) : null;
+  const isReasonAction = confirm?.action === "reject" || confirm?.action === "revoke";
+  const copy = confirm && !isReasonAction ? CONFIRM_COPY[confirm.action](confirm.user) : null;
 
   return (
     <div>
@@ -187,8 +179,20 @@ export default function AdminUsersPage() {
 
       <PaginationControls page={page} totalPages={totalPages} onChange={setPage} />
 
+      <RejectReasonModal
+        open={isReasonAction}
+        user={confirm?.user}
+        revoke={confirm?.action === "revoke"}
+        onCancel={() => setConfirm(null)}
+        onConfirm={(reason) => {
+          const { user, action } = confirm;
+          setConfirm(null);
+          run(user, action, reason);
+        }}
+      />
+
       <ConfirmModal
-        open={Boolean(confirm)}
+        open={Boolean(confirm) && !isReasonAction}
         title={copy?.title}
         message={copy?.message}
         severity="critical"

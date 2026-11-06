@@ -13,6 +13,10 @@ class UpdateUserRequest(CamelModel):
     role: str | None = Field(default=None, max_length=16)
 
 
+class RejectRequest(CamelModel):
+    reason: str | None = Field(default=None, max_length=300)
+
+
 class AdminNukeRequest(CamelModel):
     """Body for both /users/{id}/nuke (user-scoped) and /nuke-global. Exactly one of
     older_than_months or year must be set; month is optional and only valid alongside year

@@ -11,15 +11,16 @@ REJECTED = "Your request was not approved. Contact the admin."
 
 
 def test_raise_if_not_approved_messages() -> None:
-    raise_if_not_approved("approved")  # no exception
+    raise_if_not_approved({"status": "approved"})  # no exception
+    raise_if_not_approved({})  # legacy account, no status field
     with pytest.raises(HTTPException) as pending:
-        raise_if_not_approved("pending")
-    assert pending.value.status_code == 403 and pending.value.detail == PENDING
+        raise_if_not_approved({"status": "pending"})
+    assert pending.value.status_code == 403 and pending.value.detail["message"] == PENDING
     with pytest.raises(HTTPException) as rejected:
-        raise_if_not_approved("rejected")
-    assert rejected.value.status_code == 403 and rejected.value.detail == REJECTED
+        raise_if_not_approved({"status": "rejected"})
+    assert rejected.value.status_code == 403 and rejected.value.detail["message"] == REJECTED
     with pytest.raises(HTTPException):
-        raise_if_not_approved("anything-unknown")  # fail closed on unknown values
+        raise_if_not_approved({"status": "anything-unknown"})  # fail closed on unknown values
 
 
 def test_status_query_treats_missing_status_as_approved() -> None:

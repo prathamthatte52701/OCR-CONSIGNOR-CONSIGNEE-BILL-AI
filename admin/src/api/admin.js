@@ -6,7 +6,8 @@ export const adminApi = {
   updateUser: (id, data) => client.patch(`/admin/users/${id}`, data).then((r) => r.data),
   deleteUser: (id) => client.delete(`/admin/users/${id}`).then((r) => r.data),
   approveUser: (id) => client.post(`/admin/users/${id}/approve`).then((r) => r.data),
-  rejectUser: (id) => client.post(`/admin/users/${id}/reject`).then((r) => r.data),
+  rejectUser: (id, reason = null) =>
+    client.post(`/admin/users/${id}/reject`, { reason }).then((r) => r.data),
   nukeUser: (id, data) => client.post(`/admin/users/${id}/nuke`, data).then((r) => r.data),
   nukeGlobal: (data) => client.post("/admin/nuke-global", data).then((r) => r.data),
 

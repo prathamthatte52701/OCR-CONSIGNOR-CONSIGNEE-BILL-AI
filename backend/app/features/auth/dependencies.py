@@ -1,6 +1,8 @@
 """Auth dependencies — role/tokenVersion are re-read from the DB, never trusted from the JWT."""
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 
 from bson import ObjectId
 from fastapi import Depends, HTTPException
@@ -16,13 +18,41 @@ STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
 PENDING_MESSAGE = "Waiting for admin approval."
 REJECTED_MESSAGE = "Your request was not approved. Contact the admin."
+REVOKED_MESSAGE = "Your access was removed. Contact the admin."
 
 
-def raise_if_not_approved(user_status: str) -> None:
+def iso_utc(value: Any) -> str | None:
+    """A datetime (naive = UTC) as an ISO UTC string; anything else -> None."""
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat()
+
+
+def raise_if_not_approved(user: dict[str, Any]) -> None:
+    """403 with a structured detail for a pending / rejected / revoked account. A missing
+    status field is a legacy account and counts as approved; an unknown status fails closed
+    as rejected. Old rejected users have no `decision` and are reported as rejected."""
+    user_status = user.get("status", STATUS_APPROVED)
+    if user_status == STATUS_APPROVED:
+        return
     if user_status == STATUS_PENDING:
-        raise HTTPException(status_code=403, detail=PENDING_MESSAGE)
-    if user_status != STATUS_APPROVED:
-        raise HTTPException(status_code=403, detail=REJECTED_MESSAGE)
+        code, message = "ACCOUNT_PENDING", PENDING_MESSAGE
+    elif user.get("decision") == "revoked":
+        code, message = "ACCOUNT_REVOKED", REVOKED_MESSAGE
+    else:
+        code, message = "ACCOUNT_REJECTED", REJECTED_MESSAGE
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "code": code,
+            "message": message,
+            "reason": user.get("decisionReason") or None,
+            "requestedAt": iso_utc(user.get("createdAt")),
+            "decidedAt": iso_utc(user.get("decidedAt")),
+        },
+    )
 
 
 @dataclass
@@ -59,7 +89,7 @@ async def get_current_user(
     # Checked BEFORE the tokenVersion comparison so a rejected user's old (revoked) token still
     # gets the clear 403 "not approved" message instead of a generic 401. This leaks nothing:
     # the token's signature was already verified above, so only the account's own holder gets here.
-    raise_if_not_approved(user.get("status", STATUS_APPROVED))
+    raise_if_not_approved(user)
 
     if user.get("tokenVersion", 0) != payload.get("tokenVersion"):
         raise HTTPException(status_code=401, detail="Session expired, please log in again")

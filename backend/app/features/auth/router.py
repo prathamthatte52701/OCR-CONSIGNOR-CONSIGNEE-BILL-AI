@@ -19,10 +19,10 @@ from app.core.validators import (
     password_problem,
 )
 from app.features.auth.dependencies import (
-    STATUS_APPROVED,
     STATUS_PENDING,
     CurrentUser,
     get_current_user,
+    iso_utc,
     raise_if_not_approved,
 )
 from app.features.auth.schemas import (
@@ -112,12 +112,23 @@ async def login(request: Request, body: LoginRequest) -> AuthResponse:
         raise HTTPException(status_code=401, detail=GENERIC_LOGIN_ERROR)
     # Checked only AFTER the password is proven, so the pending/rejected message is never
     # shown to someone who doesn't own the account (no status oracle).
-    raise_if_not_approved(user.get("status", STATUS_APPROVED))
+    raise_if_not_approved(user)
 
+    # One-time "you were approved" notice: claimed atomically AFTER the password and the
+    # approval gate, so only one concurrent login gets it and a failed login never uses it.
+    claimed = await db.users.find_one_and_update(
+        {"_id": user["_id"], "approvalNoticePending": True},
+        {"$set": {"approvalNoticePending": False}},
+    )
     token = sign_token(str(user["_id"]), user.get("tokenVersion", 0), user.get("role", "user"))
     await log_action(user["_id"], "login", {})
     return AuthResponse(
-        token=token, username=user["username"], email=user["email"], role=user.get("role", "user")
+        token=token,
+        username=user["username"],
+        email=user["email"],
+        role=user.get("role", "user"),
+        just_approved=claimed is not None,
+        approved_at=iso_utc(claimed.get("decidedAt")) if claimed else None,
     )
 
 

@@ -1,5 +1,6 @@
 import axios from "axios";
 import { useAuthStore } from "../store/authStore";
+import { accountNotice, stashAccountDetail } from "../lib/accountStatus";
 
 let serverDown = false;
 const listeners = new Set();
@@ -24,10 +25,6 @@ function isUnreachable(error) {
   // Vite's dev proxy itself returns 502/503/504 when the backend is down.
   return [502, 503, 504].includes(error.response.status);
 }
-
-// Exact texts the backend sends with a 403 when an account is not (or no longer) approved.
-export const PENDING_MESSAGE = "Waiting for admin approval.";
-export const REJECTED_MESSAGE = "Your request was not approved. Contact the admin.";
 
 export const client = axios.create({
   baseURL: "/api",
@@ -63,13 +60,10 @@ client.interceptors.response.use(
     // Account was un-approved while logged in: end the session and say why on the login page.
     // (A 403 from the login call itself is shown inline by the login page - don't redirect.)
     const detail = error.response?.data?.detail;
-    if (
-      status === 403 &&
-      (detail === PENDING_MESSAGE || detail === REJECTED_MESSAGE) &&
-      !error.config?.url?.includes("/auth/login")
-    ) {
+    if (status === 403 && accountNotice(detail) && !error.config?.url?.includes("/auth/login")) {
       useAuthStore.getState().logout();
-      window.location.href = `/login?notice=${detail === PENDING_MESSAGE ? "pending" : "rejected"}`;
+      stashAccountDetail(detail);
+      window.location.href = "/login?notice=account";
     }
 
     error.userMessage = extractUserMessage(error);

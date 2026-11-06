@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useAuthStore } from "../store/authStore";
 import { useLogout } from "../hooks/useAuth";
 import { cn } from "../lib/utils";
+import ApprovedWelcomeDialog from "./ApprovedWelcomeDialog";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -95,6 +96,7 @@ export default function AppLayout() {
       <main className="mx-auto max-w-6xl px-4 py-6">
         <Outlet />
       </main>
+      <ApprovedWelcomeDialog />
     </div>
   );
 }

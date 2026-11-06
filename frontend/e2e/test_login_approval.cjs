@@ -3,8 +3,10 @@
 const path = require("node:path");
 const { launchBrowser, startVite, createRunner, assert, seedFrontendAuth } = require("./helpers.cjs");
 
-const PENDING = "Waiting for admin approval.";
-const REJECTED = "Your request was not approved. Contact the admin.";
+const PENDING_DETAIL = { code: "ACCOUNT_PENDING", message: "Waiting for admin approval.", reason: null, requestedAt: null, decidedAt: null };
+const PENDING = "The admin has not decided yet.";
+const REJECTED_DETAIL = { code: "ACCOUNT_REJECTED", message: "Your request was not approved. Contact the admin.", reason: null, requestedAt: null, decidedAt: null };
+const REJECTED = "Your request was not approved";
 
 (async () => {
   const runner = createRunner();
@@ -30,7 +32,7 @@ const REJECTED = "Your request was not approved. Contact the admin.";
 
   await runner.check("login 403 pending shows the pending message inline (role=alert)", async () => {
     const { context, page } = await newPage();
-    await mockLogin(page, 403, { detail: PENDING });
+    await mockLogin(page, 403, { detail: PENDING_DETAIL });
     await submitLogin(page);
     const alert = page.getByRole("alert").filter({ hasText: PENDING });
     await alert.waitFor({ timeout: 8000 });
@@ -41,7 +43,7 @@ const REJECTED = "Your request was not approved. Contact the admin.";
 
   await runner.check("login 403 rejected shows the rejected message inline", async () => {
     const { context, page } = await newPage();
-    await mockLogin(page, 403, { detail: REJECTED });
+    await mockLogin(page, 403, { detail: REJECTED_DETAIL });
     await submitLogin(page);
     await page.getByRole("alert").filter({ hasText: REJECTED }).waitFor({ timeout: 8000 });
     await context.close();
@@ -49,7 +51,7 @@ const REJECTED = "Your request was not approved. Contact the admin.";
 
   await runner.check("message stays on screen (persistent, not a vanishing toast)", async () => {
     const { context, page } = await newPage();
-    await mockLogin(page, 403, { detail: PENDING });
+    await mockLogin(page, 403, { detail: PENDING_DETAIL });
     await submitLogin(page);
     await page.getByRole("alert").filter({ hasText: PENDING }).waitFor({ timeout: 8000 });
     await page.waitForTimeout(6000); // longer than a default toast lifetime
@@ -104,7 +106,7 @@ const REJECTED = "Your request was not approved. Contact the admin.";
     await page.route(
       (url) => url.pathname.startsWith("/api/documents"),
       (route) =>
-        route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ detail: PENDING }) })
+        route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ detail: PENDING_DETAIL }) })
     );
     await page.goto(`${vite.url}/documents`);
     await page.waitForURL(/\/login\?notice=pending/, { timeout: 10000 });

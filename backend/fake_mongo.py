@@ -494,6 +494,17 @@ class _SyncCollection:
     ) -> UpdateResult:
         return self._update(filt, update, many=True, upsert=upsert)
 
+    def find_one_and_update(
+        self, filt: dict[str, Any], update: dict[str, Any], **_: Any
+    ) -> dict[str, Any] | None:
+        """Returns the document as it was BEFORE the update (pymongo default), or None."""
+        before = self.find_one(filt)
+        if before is None:
+            return None
+        before = copy.deepcopy(before)
+        self._update({"_id": before["_id"]}, update, many=False, upsert=False)
+        return before
+
     def delete_one(self, filt: dict[str, Any]) -> DeleteResult:
         for i, d in enumerate(self._docs):
             if _matches(d, filt):
@@ -605,6 +616,9 @@ class _AsyncCollection:
 
     async def update_many(self, *args: Any, **kwargs: Any) -> UpdateResult:
         return self._sync.update_many(*args, **kwargs)
+
+    async def find_one_and_update(self, *args: Any, **kwargs: Any) -> dict[str, Any] | None:
+        return self._sync.find_one_and_update(*args, **kwargs)
 
     async def delete_one(self, filt: dict[str, Any]) -> DeleteResult:
         return self._sync.delete_one(filt)

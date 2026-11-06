@@ -21,6 +21,7 @@ from testkit import PART1_BYTES, PART2_BYTES, current_db, make_document, make_us
 
 PENDING = "Waiting for admin approval."
 REJECTED = "Your request was not approved. Contact the admin."
+REVOKED = "Your access was removed. Contact the admin."
 
 # (name, method, path, json body, kind)  kind: "id" = addresses one document, "collection" = a list
 ROUTES: list[tuple[str, str, str, dict[str, Any] | None, str]] = [
@@ -247,13 +248,13 @@ async def test_pending_rejected_and_anonymous_are_locked_out_of_every_route(
         for label, headers, status, detail in (
             ("pending", pending["headers"], 403, PENDING),
             ("rejected", rejected["headers"], 403, REJECTED),
-            ("rejected-old-token", revoked["headers"], 403, REJECTED),
+            ("rejected-old-token", revoked["headers"], 403, REVOKED),
             ("anonymous", {}, 401, None),
         ):
             r = _call(client, method, url, headers, body)
             assert r.status_code == status, (name, label, r.status_code)
             if detail:
-                assert r.json()["detail"] == detail, (name, label)
+                assert r.json()["detail"]["message"] == detail, (name, label)
             assert doc["invoiceNo"] not in r.text, (name, label)
     # the document is untouched by all of that
     assert await _doc_snapshot(doc["_id"]) is not None
