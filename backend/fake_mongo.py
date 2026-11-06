@@ -257,6 +257,13 @@ def _eval(expr: Any, doc: dict[str, Any], env: dict[str, Any]) -> Any:
         return bool(left != right)
     if op == "$and":
         return all(_eval(a, doc, env) for a in arg)
+    if op == "$or":
+        return any(_eval(a, doc, env) for a in arg)
+    if op == "$ifNull":
+        value, fallback = (_eval(a, doc, env) for a in arg)
+        return fallback if value is None else value
+    if op == "$add":
+        return sum(_eval(a, doc, env) for a in arg)
     if op == "$type":
         if isinstance(arg, str) and arg.startswith("$") and not arg.startswith("$$"):
             return _type_name(_get_path(doc, arg[1:]))
@@ -306,6 +313,21 @@ def _run_pipeline(
                     return _cmp_key(value)
 
                 rows.sort(key=sort_key, reverse=direction < 0)
+        elif name == "$group":
+            # single group only (_id: None) with $sum accumulators - all /storage needs
+            if arg["_id"] is not None:
+                raise AttributeError("fake_mongo: $group supports only _id: None")
+            if rows:
+                rows = [
+                    {
+                        "_id": None,
+                        **{
+                            f: sum(_eval(a["$sum"], d, {}) for d in rows)
+                            for f, a in arg.items()
+                            if f != "_id"
+                        },
+                    }
+                ]
         elif name == "$skip":
             rows = rows[arg:]
         elif name == "$limit":

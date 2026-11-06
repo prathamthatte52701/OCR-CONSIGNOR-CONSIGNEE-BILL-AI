@@ -31,6 +31,14 @@ class StatsResponse(CamelModel):
     processed_today: int
     low_confidence: int
     multi_page: int
+    needs_review: int = 0
+    processing: int = 0
+    corrected: int = 0
+
+
+class StorageResponse(CamelModel):
+    documents: int
+    bytes: int
 
 
 class DownloadAllRequest(CamelModel):

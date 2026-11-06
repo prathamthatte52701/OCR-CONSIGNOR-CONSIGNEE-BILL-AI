@@ -5,18 +5,28 @@ import { documentsApi } from "../api/documents";
 
 const POLL_STATUSES = new Set(["uploaded", "processing"]);
 
-export function useDocumentsList(params) {
+export function useDocumentsList(params, options = {}) {
   return useQuery({
     queryKey: ["documents", params],
     queryFn: () => documentsApi.list(params),
     placeholderData: keepPreviousData, // no flash of an empty list while the next page loads
+    ...options,
   });
 }
 
-export function useDocumentStats() {
+export function useDocumentStats(options = {}) {
   return useQuery({
     queryKey: ["documents", "stats"],
     queryFn: () => documentsApi.stats(),
+    ...options,
+  });
+}
+
+// Loaded once per visit - no polling.
+export function useDocumentStorage() {
+  return useQuery({
+    queryKey: ["documents", "storage"],
+    queryFn: () => documentsApi.storage(),
   });
 }
 

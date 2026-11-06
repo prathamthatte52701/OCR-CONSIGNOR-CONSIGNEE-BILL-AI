@@ -57,6 +57,7 @@ from app.features.documents.gridfs_service import (
 from app.features.documents.list_query import (
     TEXT_COLLATION,
     build_list_query,
+    needs_review_condition,
     sorted_page_pipeline,
 )
 from app.features.documents.processing import run_full_pipeline
@@ -66,6 +67,7 @@ from app.features.documents.schemas import (
     DocumentListResponse,
     DownloadAllRequest,
     StatsResponse,
+    StorageResponse,
     UploadResponse,
 )
 from app.features.ocr.preprocessing import get_pdf_page_count
@@ -102,6 +104,7 @@ def _serialize_document(doc: dict[str, Any]) -> dict[str, Any]:
     result.pop("userId", None)
     result.pop("part1GridFsFileId", None)
     result.pop("part2GridFsFileId", None)
+    result["hasReviewWarnings"] = bool(result.get("hasReviewWarnings"))
     return result
 
 
@@ -434,6 +437,7 @@ async def list_documents(
     month: str | None = Query(None),
     date_range: str | None = Query(None, alias="range", pattern="^(today|week|month|year)$"),
     needs_review: bool = Query(False, alias="needsReview"),
+    status: Literal["failed", "processed"] | None = Query(None),
     sort: (
         Literal[
             "invoiceNo", "consigneeCode", "consignee", "challanDate", "uploadStatus", "createdAt"
@@ -452,6 +456,7 @@ async def list_documents(
         month=month,
         date_range=date_range,
         needs_review=needs_review,
+        status=status,
     )
     total = await db.documents.count_documents(query)
     skip = (page - 1) * limit
@@ -674,6 +679,11 @@ async def get_stats(current_user: CurrentUser = Depends(get_current_user)) -> St
     )
     low_confidence = await db.documents.count_documents({**base, "hasLowConfidenceFields": True})
     multi_page = await db.documents.count_documents({**base, "multiPage": True})
+    needs_review = await db.documents.count_documents({**base, "$and": [needs_review_condition()]})
+    processing = await db.documents.count_documents(
+        {**base, "uploadStatus": {"$in": ["uploaded", "processing"]}}
+    )
+    corrected = await db.documents.count_documents({**base, "edited": True})
 
     return StatsResponse(
         total=total,
@@ -682,7 +692,35 @@ async def get_stats(current_user: CurrentUser = Depends(get_current_user)) -> St
         processed_today=processed_today,
         low_confidence=low_confidence,
         multi_page=multi_page,
+        needs_review=needs_review,
+        processing=processing,
+        corrected=corrected,
     )
+
+
+@router.get("/storage", response_model=StorageResponse)
+async def get_storage(current_user: CurrentUser = Depends(get_current_user)) -> StorageResponse:
+    """Documents that still hold an original file, and the bytes those files take."""
+
+    def kept(part: str) -> dict[str, Any]:
+        return {"$ne": [f"${part}FilePurged", True]}
+
+    def size(part: str) -> dict[str, Any]:
+        return {"$cond": [kept(part), {"$ifNull": [f"${part}Size", 0]}, 0]}
+
+    pipeline: list[dict[str, Any]] = [
+        {"$match": {"userId": current_user.id, "isDeleted": {"$ne": True}}},
+        {
+            "$group": {
+                "_id": None,
+                "documents": {"$sum": {"$cond": [{"$or": [kept("part1"), kept("part2")]}, 1, 0]}},
+                "bytes": {"$sum": {"$add": [size("part1"), size("part2")]}},
+            }
+        },
+    ]
+    rows = await get_database().documents.aggregate(pipeline).to_list(length=1)
+    row = rows[0] if rows else {}
+    return StorageResponse(documents=row.get("documents", 0), bytes=row.get("bytes", 0))
 
 
 @router.get("/{document_id}")

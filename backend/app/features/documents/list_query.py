@@ -93,6 +93,17 @@ def upload_range_start_utc(range_key: str, now: datetime) -> datetime:
     return start.astimezone(UTC)
 
 
+def needs_review_condition() -> dict[str, Any]:
+    """The ONE needs-review rule, shared by the list filter and /stats so the numbers match."""
+    return {
+        "$or": [
+            {"uploadStatus": "failed"},
+            {"hasLowConfidenceFields": True},
+            {"hasReviewWarnings": True},
+        ]
+    }
+
+
 def build_list_query(
     user_id: Any,
     *,
@@ -101,6 +112,7 @@ def build_list_query(
     month: str | None = None,
     date_range: str | None = None,
     needs_review: bool = False,
+    status: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Every condition is collected and combined with $and, so the search $or, the month "none"
@@ -118,15 +130,9 @@ def build_list_query(
         start = upload_range_start_utc(date_range, now or datetime.now(UTC))
         conditions.append({"createdAt": {"$gte": start}})
     if needs_review:
-        conditions.append(
-            {
-                "$or": [
-                    {"uploadStatus": "failed"},
-                    {"hasLowConfidenceFields": True},
-                    {"hasReviewWarnings": True},
-                ]
-            }
-        )
+        conditions.append(needs_review_condition())
+    if status:
+        conditions.append({"uploadStatus": status})
     query: dict[str, Any] = {"userId": user_id, "isDeleted": {"$ne": True}}
     if conditions:
         query["$and"] = conditions

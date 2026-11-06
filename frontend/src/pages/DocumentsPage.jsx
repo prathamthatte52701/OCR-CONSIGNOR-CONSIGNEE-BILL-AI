@@ -8,6 +8,7 @@ import { readErrorMessage } from "../api/client";
 import LoadingState from "../components/LoadingState";
 import { formatIST } from "../lib/formatDate";
 import { cn } from "../lib/utils";
+import { needsAttention } from "../lib/needsAttention";
 import {
   MONTH_NAMES,
   apiParamsFromFilters,
@@ -261,6 +262,23 @@ export default function DocumentsPage() {
         >
           Needs review
         </button>
+        {["failed", "processed"].map((status) => (
+          <button
+            key={status}
+            type="button"
+            onClick={() =>
+              applyFilters({ ...filters, status: filters.status === status ? "" : status })
+            }
+            className={cn(
+              "px-3 py-1 rounded-full border text-xs font-medium capitalize",
+              filters.status === status
+                ? "bg-accent text-bg border-accent"
+                : "border-border text-text-muted hover:border-accent/50"
+            )}
+          >
+            {status}
+          </button>
+        ))}
       </div>
 
       {filterDescription.length > 0 && (
@@ -318,7 +336,7 @@ export default function DocumentsPage() {
                   <span className="font-medium text-sm truncate">
                     {doc.invoiceNo || "(no invoice no.)"}
                   </span>
-                  {doc.hasLowConfidenceFields && (
+                  {needsAttention(doc) && (
                     <AlertTriangle size={14} className="text-warning shrink-0" />
                   )}
                   {doc.multiPage && <Layers size={14} className="text-text-muted shrink-0" />}

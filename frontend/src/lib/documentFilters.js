@@ -8,7 +8,7 @@ export const MONTH_NAMES = [
 
 const RANGE_LABELS = { today: "today", week: "this week", month: "this month", year: "this year" };
 
-// URL search params -> { search, date, month, range, needsReview }
+// URL search params -> { search, date, month, range, needsReview, status }
 export function filtersFromSearchParams(sp) {
   return {
     search: sp.get("search") || "",
@@ -16,6 +16,7 @@ export function filtersFromSearchParams(sp) {
     month: sp.get("month") || "",
     range: sp.get("range") || "",
     needsReview: sp.get("needsReview") === "1",
+    status: ["failed", "processed"].includes(sp.get("status")) ? sp.get("status") : "",
   };
 }
 
@@ -27,6 +28,7 @@ export function apiParamsFromFilters(f) {
   if (f.month) params.month = f.month;
   if (f.range) params.range = f.range;
   if (f.needsReview) params.needsReview = true;
+  if (f.status) params.status = f.status;
   return params;
 }
 
@@ -54,6 +56,7 @@ export function describeFilters(f) {
   if (f.month) parts.push(describeMonth(f.month));
   if (f.range) parts.push(`uploaded ${RANGE_LABELS[f.range] || f.range}`);
   if (f.needsReview) parts.push("needs review");
+  if (f.status) parts.push(`status ${f.status}`);
   return parts;
 }
 
