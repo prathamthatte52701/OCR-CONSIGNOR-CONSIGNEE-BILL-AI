@@ -48,6 +48,15 @@ const ACTION_STYLE = {
   delete: "bg-red-700 hover:bg-red-800",
 };
 
+// One muted line for a rejected user: when and why (plain text). Old rows have no decision.
+function decisionLine(user) {
+  if (user.status !== "rejected") return null;
+  if (!user.decision) return "Rejected";
+  const label = user.decision === "revoked" ? "Access removed" : "Rejected";
+  const on = user.decidedAt ? ` on ${formatIST(user.decidedAt)}` : "";
+  return `${label}${on}: ${user.decisionReason || "No reason was given"}`;
+}
+
 const CONFIRM_COPY = {
   delete: (u) => ({
     title: "Permanently delete this user?",
@@ -158,7 +167,12 @@ export default function AdminUsersPage() {
               <p className="text-xs text-text-muted">{user.email}</p>
             </div>
             <div className="flex items-center gap-3 text-xs text-text-muted">
-              <span className={STATUS_STYLE[user.status] ?? ""}>{user.status}</span>
+              <span className={STATUS_STYLE[user.status] ?? ""}>
+                {user.status}
+                {decisionLine(user) && (
+                  <span className="block text-[11px] text-text-muted font-normal">{decisionLine(user)}</span>
+                )}
+              </span>
               <span className={user.role === "admin" ? "text-accent font-medium" : ""}>{user.role}</span>
               <span>{formatIST(user.createdAt)}</span>
               {actionsFor(user).map((action) => (

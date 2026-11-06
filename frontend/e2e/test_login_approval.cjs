@@ -109,7 +109,7 @@ const REJECTED = "Your request was not approved";
         route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ detail: PENDING_DETAIL }) })
     );
     await page.goto(`${vite.url}/documents`);
-    await page.waitForURL(/\/login\?notice=pending/, { timeout: 10000 });
+    await page.waitForURL(/\/login\?notice=account/, { timeout: 10000 });
     await page.getByRole("alert").filter({ hasText: PENDING }).waitFor({ timeout: 5000 });
     const stored = await page.evaluate(() => localStorage.getItem("main-ocr-auth"));
     assert(!stored || !JSON.parse(stored).state.token, "token was not cleared");

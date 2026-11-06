@@ -241,10 +241,17 @@ async def _set_user_status(
         revoked = previous == STATUS_APPROVED or (
             previous == STATUS_REJECTED and user.get("decision") == "revoked"
         )
-        update["$set"]["decision"] = "revoked" if revoked else "rejected"
-        update["$set"]["decisionReason"] = reason
         update["$set"]["approvalNoticePending"] = False
-        decision_audit = {"decision": update["$set"]["decision"], "reason": reason}
+        if previous == STATUS_REJECTED:
+            # rejecting again keeps the first decision and date; only a NEW reason replaces
+            del update["$set"]["decidedAt"]
+            if reason is not None:
+                update["$set"]["decisionReason"] = reason
+            decision_audit = {"decision": user.get("decision"), "reason": reason}
+        else:
+            update["$set"]["decision"] = "revoked" if revoked else "rejected"
+            update["$set"]["decisionReason"] = reason
+            decision_audit = {"decision": update["$set"]["decision"], "reason": reason}
     if new_status == STATUS_REJECTED:
         # Admins (including yourself) can never be locked out this way.
         if user.get("role") == "admin":
@@ -337,6 +344,8 @@ async def update_user(
             audit.update({"previousEmail": user["email"], "newEmail": normalized_email})
             email_changed = True
     if body.role is not None:
+        if user["_id"] == current_user.id and body.role != "admin":
+            raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")
         if body.role not in ("user", "admin"):
             raise HTTPException(status_code=400, detail="Role must be 'user' or 'admin'.")
         updates["role"] = body.role

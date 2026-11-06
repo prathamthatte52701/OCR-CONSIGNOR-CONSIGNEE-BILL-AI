@@ -31,6 +31,7 @@ const mkUser = (id, status, role = "user") => ({
       mkUser("adm", "approved", "admin"),
     ];
     const calls = [];
+    const bodies = [];
     let failures = failNext || 0;
     await page.route(
       (url) => url.pathname.startsWith("/api/"),
@@ -56,6 +57,7 @@ const mkUser = (id, status, role = "user") => ({
         const m = url.pathname.match(/^\/api\/admin\/users\/([^/]+)(?:\/(approve|reject))?$/);
         if (m && (req.method() === "POST" || req.method() === "DELETE")) {
           calls.push(`${req.method()} ${url.pathname}`);
+          bodies.push(req.postData());
           if (failures > 0) {
             failures -= 1;
             return respond(400, { detail: "Admin accounts cannot be rejected." });
@@ -70,7 +72,7 @@ const mkUser = (id, status, role = "user") => ({
     );
     await page.goto(`${vite.url}/users`);
     await page.getByRole("button", { name: /^Pending/ }).waitFor({ timeout: 10000 });
-    return { context, page, calls, users };
+    return { context, page, calls, bodies, users };
   };
   const row = (page, id) => page.locator("a", { hasText: `user${id}@example.invalid` });
 
@@ -97,20 +99,22 @@ const mkUser = (id, status, role = "user") => ({
 
   await runner.check("Reject asks for confirmation; Cancel sends nothing", async () => {
     const { context, page, calls } = await open();
-    await row(page, "p1").getByRole("button", { name: "Reject" }).click();
-    await page.getByRole("heading", { name: "Reject this sign-up?" }).waitFor();
-    await page.getByRole("button", { name: "Cancel" }).click();
+    await row(page, "p1").getByRole("button", { name: "Reject", exact: true }).click();
+    await page.getByRole("heading", { name: /^Reject / }).waitFor();
+    await page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true }).click();
     await page.waitForTimeout(500);
     assert(calls.length === 0, `Cancel must not call the API, got ${calls}`);
     await context.close();
   });
 
   await runner.check("confirming Reject rejects the user and moves them out of Pending", async () => {
-    const { context, page, calls } = await open();
-    await row(page, "p1").getByRole("button", { name: "Reject" }).click();
-    await page.getByRole("dialog").getByRole("button", { name: "Reject" }).click();
+    const { context, page, calls, bodies } = await open();
+    await row(page, "p1").getByRole("button", { name: "Reject", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Duplicate account", exact: true }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Confirm reject", exact: true }).click();
     await page.waitForFunction(() => !document.body.innerText.includes("userp1@example.invalid"), null, { timeout: 8000 });
     assert(calls.join() === "POST /api/admin/users/p1/reject", `unexpected calls: ${calls}`);
+    assert(JSON.parse(bodies[0]).reason === "Duplicate account", `reason missing in body: ${bodies[0]}`);
     await context.close();
   });
 
@@ -153,8 +157,8 @@ const mkUser = (id, status, role = "user") => ({
     await row(page, "a1").waitFor();
     assert((await row(page, "adm").getByRole("button").count()) === 0, "admin row must have no action buttons");
     await row(page, "a1").getByRole("button", { name: "Revoke" }).click();
-    await page.getByRole("heading", { name: "Revoke access?" }).waitFor();
-    await page.getByRole("dialog").getByRole("button", { name: "Revoke" }).click();
+    await page.getByRole("heading", { name: /^Revoke / }).waitFor();
+    await page.getByRole("dialog").getByRole("button", { name: "Confirm revoke", exact: true }).click();
     await page.waitForFunction(() => !document.body.innerText.includes("usera1@example.invalid"), null, { timeout: 8000 });
     assert(calls.join() === "POST /api/admin/users/a1/reject", `unexpected calls: ${calls}`);
     await context.close();

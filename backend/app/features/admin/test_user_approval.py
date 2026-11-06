@@ -197,3 +197,56 @@ async def test_unknown_and_malformed_ids(client: TestClient, path_id: str, expec
     for action in ("approve", "reject"):
         r = client.post(f"/api/admin/users/{path_id}/{action}", headers=admin["headers"])
         assert r.status_code == expected, (action, path_id)
+
+
+# ------------------------------------------------------------------ Feature 10 follow-up
+
+
+async def test_re_reject_keeps_first_decision_and_replaces_only_a_new_reason(
+    client: TestClient,
+) -> None:
+    admin, user = await _make("admin"), await _make(status="pending")
+    url = f"/api/admin/users/{user['_id']}/reject"
+    first = client.post(url, json={"reason": "Wrong email"}, headers=admin["headers"])
+    assert first.status_code == 200
+    stored = await current_db().users.find_one({"_id": user["_id"]})
+    assert stored is not None
+    decided_at = stored["decidedAt"]
+
+    again = client.post(url, headers=admin["headers"])  # no new reason
+    assert again.status_code == 200
+    stored = await current_db().users.find_one({"_id": user["_id"]})
+    assert stored is not None
+    assert stored["decisionReason"] == "Wrong email" and stored["decidedAt"] == decided_at
+    assert stored["decision"] == "rejected" and stored["tokenVersion"] == 2  # bumped each time
+
+    client.post(url, json={"reason": "Duplicate account"}, headers=admin["headers"])
+    stored = await current_db().users.find_one({"_id": user["_id"]})
+    assert stored is not None
+    assert stored["decisionReason"] == "Duplicate account" and stored["decidedAt"] == decided_at
+
+
+async def test_admin_cannot_demote_self_but_can_edit_and_promote(client: TestClient) -> None:
+    admin, plain = await _make("admin"), await _make()
+    own = f"/api/admin/users/{admin['_id']}"
+    demote = client.patch(own, json={"role": "user"}, headers=admin["headers"])
+    assert demote.status_code == 400
+    assert demote.json()["detail"] == "You cannot remove your own admin role."
+    stored = await current_db().users.find_one({"_id": admin["_id"]})
+    assert stored is not None and stored["role"] == "admin"
+
+    rename = client.patch(own, json={"username": "renamed"}, headers=admin["headers"])
+    assert rename.status_code == 200 and rename.json()["username"] == "renamed"
+    promote = client.patch(
+        f"/api/admin/users/{plain['_id']}", json={"role": "admin"}, headers=admin["headers"]
+    )
+    assert promote.status_code == 200 and promote.json()["role"] == "admin"
+
+
+async def test_first_time_reject_and_revoke_set_the_decision(client: TestClient) -> None:
+    admin = await _make("admin")
+    pending, approved = await _make(status="pending"), await _make()
+    first = client.post(f"/api/admin/users/{pending['_id']}/reject", headers=admin["headers"])
+    assert first.json()["decision"] == "rejected" and first.json()["decidedAt"]
+    revoked = client.post(f"/api/admin/users/{approved['_id']}/reject", headers=admin["headers"])
+    assert revoked.json()["decision"] == "revoked" and revoked.json()["decidedAt"]

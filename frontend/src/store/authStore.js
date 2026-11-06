@@ -1,6 +1,31 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+// The one-time "you were approved" notice survives a reload (sessionStorage, not localStorage,
+// so it never outlives the tab) until OK is pressed. Every access is guarded.
+const NOTICE_KEY = "main-ocr-approval-notice";
+
+function readNotice() {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(NOTICE_KEY));
+    if (parsed?.justApproved === true) {
+      return { justApproved: true, approvedAt: parsed.approvedAt ?? null };
+    }
+  } catch {
+    /* unreadable or unavailable - no notice */
+  }
+  return { justApproved: false, approvedAt: null };
+}
+
+function writeNotice(justApproved, approvedAt) {
+  try {
+    if (justApproved) sessionStorage.setItem(NOTICE_KEY, JSON.stringify({ justApproved: true, approvedAt }));
+    else sessionStorage.removeItem(NOTICE_KEY);
+  } catch {
+    /* storage unavailable - the notice then lives in memory only */
+  }
+}
+
 export const useAuthStore = create(
   persist(
     (set) => ({
@@ -8,10 +33,10 @@ export const useAuthStore = create(
       username: null,
       email: null,
       role: null,
-      // In memory only (see partialize): the one-time "you were approved" notice.
-      justApproved: false,
-      approvedAt: null,
-      setAuth: ({ token, username, email, role, justApproved, approvedAt }) =>
+      // Not part of the persisted auth state (see partialize); mirrored in sessionStorage.
+      ...readNotice(),
+      setAuth: ({ token, username, email, role, justApproved, approvedAt }) => {
+        writeNotice(Boolean(justApproved), approvedAt ?? null);
         set({
           token,
           username,
@@ -19,11 +44,17 @@ export const useAuthStore = create(
           role,
           justApproved: Boolean(justApproved),
           approvedAt: approvedAt ?? null,
-        }),
-      clearJustApproved: () => set({ justApproved: false, approvedAt: null }),
+        });
+      },
+      clearJustApproved: () => {
+        writeNotice(false, null);
+        set({ justApproved: false, approvedAt: null });
+      },
       updateProfile: ({ username, email, role }) => set({ username, email, role }),
-      logout: () =>
-        set({ token: null, username: null, email: null, role: null, justApproved: false, approvedAt: null }),
+      logout: () => {
+        writeNotice(false, null);
+        set({ token: null, username: null, email: null, role: null, justApproved: false, approvedAt: null });
+      },
     }),
     {
       name: "main-ocr-auth",
