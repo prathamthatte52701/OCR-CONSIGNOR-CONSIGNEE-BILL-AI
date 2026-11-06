@@ -136,3 +136,18 @@ def test_report_records_the_metric_each_gate_fired_on() -> None:
         "quadrant_delta",
         "fg_bg_gap",
     }
+
+
+@pytest.mark.parametrize("shape", [(-1, 1, 4), (-1, 4)])
+def test_skew_estimate_accepts_both_hough_shapes(
+    monkeypatch: pytest.MonkeyPatch, shape: tuple[int, ...]
+) -> None:
+    raw = np.array([[0, 0, 100, 5], [0, 10, 100, 15], [0, 0, 5, 100]], dtype=np.int32)
+    monkeypatch.setattr(cv2, "HoughLinesP", lambda *a, **k: raw.reshape(shape))
+    gray = np.zeros((200, 200), dtype=np.uint8)
+    assert preprocessing._estimate_skew_degrees(gray) == pytest.approx(2.862, abs=0.01)
+
+
+def test_skew_estimate_no_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cv2, "HoughLinesP", lambda *a, **k: None)
+    assert preprocessing._estimate_skew_degrees(np.zeros((50, 50), dtype=np.uint8)) == 0.0

@@ -106,7 +106,8 @@ def _estimate_skew_degrees(gray: np.ndarray) -> float:
     if lines is None:
         return 0.0
     angles = []
-    for x1, y1, x2, y2 in lines[:, 0]:
+    # OpenCV 4 returns (N, 1, 4); older builds returned (N, 4). Accept both.
+    for x1, y1, x2, y2 in np.asarray(lines).reshape(-1, 4):
         angle = float(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
         # Fold vertical rules onto the horizontal frame; a page's verticals and horizontals
         # carry the same tilt, so both are evidence for the same angle.
