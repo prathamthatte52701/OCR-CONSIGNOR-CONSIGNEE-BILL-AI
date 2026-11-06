@@ -23,6 +23,7 @@ export function useCorrectField(documentId) {
     mutationFn: ({ field, value }) => documentsApi.correct(documentId, field, value),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["document", documentId] });
+      qc.invalidateQueries({ queryKey: ["documents"] });
       toast.success("Field updated.");
     },
     onError: (error) => toast.error(error.userMessage || "Could not save the field."),
@@ -35,6 +36,7 @@ export function useReprocessDocument(documentId) {
     mutationFn: () => documentsApi.reprocess(documentId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["document", documentId] });
+      qc.invalidateQueries({ queryKey: ["documents"] });
       toast.success("Reprocessing started.");
     },
     onError: (error) => toast.error(error.userMessage || "Could not reprocess."),
@@ -68,6 +70,7 @@ export function usePurgeFiles(documentId) {
     mutationFn: () => documentsApi.purgeFiles(documentId),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["document", documentId] });
+      qc.invalidateQueries({ queryKey: ["documents"] });
       notifyCleanup(data, "Original files deleted. Extracted data was kept.");
     },
     onError: (error) => toast.error(error.userMessage || "Could not delete files."),

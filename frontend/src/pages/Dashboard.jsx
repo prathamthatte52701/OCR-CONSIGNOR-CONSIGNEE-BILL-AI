@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   FileStack,
@@ -63,6 +63,21 @@ function ErrorBox({ message, onRetry }) {
   );
 }
 
+function RefreshError({ message, onRetry }) {
+  return (
+    <p className="flex items-center gap-2 mb-3 text-xs text-danger">
+      {message}
+      <button
+        type="button"
+        onClick={onRetry}
+        className="rounded border border-border px-2 py-0.5 text-text hover:border-accent/50"
+      >
+        Retry
+      </button>
+    </p>
+  );
+}
+
 function formatBytes(n) {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
@@ -83,6 +98,15 @@ export default function Dashboard() {
   );
   const storageQuery = useDocumentStorage();
 
+  // When processing goes from > 0 to 0, refresh the recent list once (a first load at 0 does not).
+  const prevProcessing = useRef(null);
+  const refetchRecent = recentQuery.refetch;
+  useEffect(() => {
+    if (!statsQuery.data) return;
+    if (prevProcessing.current > 0 && processing === 0) refetchRecent();
+    prevProcessing.current = processing;
+  }, [processing, statsQuery.data, refetchRecent]);
+
   const runSearch = (e) => {
     e.preventDefault();
     const text = searchText.trim();
@@ -90,7 +114,7 @@ export default function Dashboard() {
   };
 
   if (statsQuery.isLoading) return <LoadingState message="Loading dashboard..." />;
-  if (statsQuery.isError || !statsQuery.data) {
+  if (!statsQuery.data) {
     return (
       <div>
         <h1 className="text-xl font-semibold mb-4">Dashboard</h1>
@@ -127,6 +151,10 @@ export default function Dashboard() {
           </button>
         </form>
       </div>
+
+      {statsQuery.isError && (
+        <RefreshError message="Could not refresh the numbers." onRetry={() => statsQuery.refetch()} />
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mb-6">
         <StatCard icon={FileStack} label="Total" value={stats.total} to="/documents" />
@@ -205,7 +233,13 @@ export default function Dashboard() {
           View all
         </Link>
       </div>
-      {recentQuery.isError ? (
+      {recentQuery.isError && recent.length > 0 && (
+        <RefreshError
+          message="Could not refresh recent documents."
+          onRetry={() => recentQuery.refetch()}
+        />
+      )}
+      {recentQuery.isError && recent.length === 0 ? (
         <ErrorBox
           message={recentQuery.error?.userMessage || "Could not load recent documents."}
           onRetry={() => recentQuery.refetch()}

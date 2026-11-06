@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Loader2, AlertCircle, Plus, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { documentsApi } from "../api/documents";
 import { useDocument } from "../hooks/useDocumentsQueries";
@@ -39,6 +40,7 @@ function SetRow({ n, id, isReading, onStatus }) {
 }
 
 export default function BulkUpload() {
+  const queryClient = useQueryClient();
   const [rows, setRows] = useState([newRow()]);
   const [uploading, setUploading] = useState(false);
   const [formError, setFormError] = useState("");
@@ -79,6 +81,8 @@ export default function BulkUpload() {
     } catch (err) {
       setFormError(err.userMessage || "Upload failed.");
     } finally {
+      // Also on failure/timeout: the server may already have created documents.
+      queryClient.invalidateQueries({ queryKey: ["documents"] });
       busyRef.current = false;
       setUploading(false);
     }
