@@ -20,6 +20,16 @@ DELETE_FAILED_MESSAGE = (
 )
 
 
+def document_snapshot(doc: dict[str, Any]) -> dict[str, str]:
+    """invoiceNo / consignee (non-empty strings, cut to 100 chars) for audit log contexts, so
+    the activity list can still name a document after it is gone."""
+    return {
+        key: doc[key][:100]
+        for key in ("invoiceNo", "consignee")
+        if isinstance(doc.get(key), str) and doc[key]
+    }
+
+
 async def best_effort_purge_files(doc: dict[str, Any]) -> bool:
     """Deletes both stored files; never raises. Returns True when any delete failed."""
     failed = False

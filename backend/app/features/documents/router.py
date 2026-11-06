@@ -46,6 +46,7 @@ from app.features.documents.file_purge import (
     PURGE_FAILED_MESSAGE,
     PURGE_OK_MESSAGE,
     best_effort_purge_files,
+    document_snapshot,
     purge_parts,
 )
 from app.features.documents.gridfs_service import (
@@ -339,7 +340,10 @@ async def upload_document(
         is_reprocess=False,
         run_id=run_id,
     )
-    await log_action(current_user.id, "document_uploaded", {"documentId": str(doc_id)})
+    try:
+        await log_action(current_user.id, "document_uploaded", {"documentId": str(doc_id)})
+    except Exception as exc:  # noqa: BLE001 - an audit hiccup must not fail a stored upload
+        logger.error("upload audit log failed: class=%s", type(exc).__name__)
     return UploadResponse(id=str(doc_id), upload_status="processing")
 
 
@@ -820,7 +824,10 @@ async def reprocess_document(
         is_reprocess=True,
         run_id=run_id,
     )
-    await log_action(current_user.id, "document_reprocessed", {"documentId": document_id})
+    try:
+        await log_action(current_user.id, "document_reprocessed", {"documentId": document_id})
+    except Exception as exc:  # noqa: BLE001 - an audit hiccup must not fail a started reprocess
+        logger.error("reprocess audit log failed: class=%s", type(exc).__name__)
     return {"message": "Reprocessing started."}
 
 
@@ -849,11 +856,9 @@ async def delete_document(
     cleanup_failed = await best_effort_purge_files(doc)
     await db.documents.delete_one({"_id": doc["_id"]})
     await db.corrections.delete_many({"documentId": doc["_id"]})
-    context = {"documentId": document_id}
-    for key in ("invoiceNo", "consignee"):  # kept so the activity list can still name it
-        if isinstance(doc.get(key), str) and doc[key]:
-            context[key] = doc[key][:100]
-    await log_action(current_user.id, "document_deleted", context)
+    await log_action(
+        current_user.id, "document_deleted", {"documentId": document_id, **document_snapshot(doc)}
+    )
     message = DELETE_FAILED_MESSAGE if cleanup_failed else DELETE_OK_MESSAGE
     return {"message": message, "gridFsCleanupFailed": cleanup_failed}
 

@@ -254,7 +254,7 @@ async def test_document_join_and_context_trim(
         assert item["document"] == {
             "id": str(doc_id), "invoiceNo": "INV-9", "consigneeCode": "42", "consignee": "ACME",
         }  # fmt: skip
-        assert item["context"] == {"documentId": str(doc_id), "field": "consignee"}
+        assert item["context"] == {"documentId": str(doc_id), "field": "consignee", "byAdmin": True}
     finally:
         await db.documents.delete_one({"_id": doc_id})
 
@@ -290,3 +290,87 @@ async def test_delete_route_logs_name_and_activity_shows_it(
     assert item["document"] is None
     assert item["context"]["invoiceNo"] == "GONE-1"
     assert item["context"]["consignee"] == "X" * 100
+
+
+# ------------------------------------------------------------------ Feature 9 fixes
+
+
+async def test_equal_timestamps_page_without_gaps_or_duplicates(
+    db: AsyncIOMotorDatabase, client: TestClient, _cleanup: list[ObjectId]
+) -> None:
+    user = _user()
+    _cleanup.append(user.id)
+    same = datetime.now(UTC)
+    await db.auditlogs.insert_many(
+        [{"userId": user.id, "action": "login", "context": {}, "createdAt": same} for _ in range(7)]
+    )
+    _act_as(user)
+
+    def walk() -> list[str]:
+        ids: list[str] = []
+        for page in (1, 2, 3, 4):
+            r = client.get("/api/auth/me/activity", params={"page": page, "limit": 2})
+            ids += [i["id"] for i in r.json()["items"]]
+        return ids
+
+    first = walk()
+    assert len(first) == len(set(first)) == 7
+    assert walk() == first
+
+
+async def test_admin_delete_snapshot_shows_in_admins_activity(
+    db: AsyncIOMotorDatabase, client: TestClient
+) -> None:
+    from testkit import make_document, make_user
+
+    app.dependency_overrides.pop(get_current_user, None)  # use real tokens here
+    admin, owner = await make_user(role="admin"), await make_user()
+    doc = await make_document(owner["_id"], invoiceNo="ADM-1", consignee="ACME")
+    r = client.delete(f"/api/admin/documents/{doc['id']}", headers=admin["headers"])
+    assert r.status_code == 200
+    item = client.get("/api/auth/me/activity", headers=admin["headers"]).json()["items"][0]
+    assert item["document"] is None
+    assert item["context"]["byAdmin"] is True
+    assert item["context"]["invoiceNo"] == "ADM-1" and item["context"]["consignee"] == "ACME"
+
+
+async def test_signup_is_not_an_activity_type(
+    db: AsyncIOMotorDatabase, client: TestClient, _cleanup: list[ObjectId]
+) -> None:
+    from app.features.auth.router import ACCOUNT_ACTIONS, DOCUMENT_ACTIONS
+
+    assert "signup" not in ACCOUNT_ACTIONS + DOCUMENT_ACTIONS
+    user = _user()
+    _cleanup.append(user.id)
+    await _log(db, user.id, "signup")
+    await _log(db, user.id, "login")
+    _act_as(user)
+    for kind in ("account", "all"):
+        items = client.get("/api/auth/me/activity", params={"type": kind}).json()["items"]
+        assert {i["action"] for i in items} == {"login"}
+
+
+async def test_single_upload_survives_an_audit_failure(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.features.documents import router as r_mod
+    from testkit import current_db, make_user
+
+    async def stub(*_: object, **__: object) -> None:
+        return None
+
+    async def boom(*_: object, **__: object) -> None:
+        raise RuntimeError("audit down")
+
+    monkeypatch.setattr(r_mod, "_run_pipeline_and_update", stub)
+    monkeypatch.setattr(r_mod, "log_action", boom)
+    app.dependency_overrides.pop(get_current_user, None)
+    user = await make_user()
+    jpeg = b"\xff\xd8\xff" + b"0" * 97
+    r = client.post(
+        "/api/documents/upload",
+        headers=user["headers"],
+        files={"part1": ("a.jpg", jpeg, "image/jpeg"), "part2": ("b.jpg", jpeg, "image/jpeg")},
+    )
+    assert r.status_code == 201
+    assert await current_db().documents.find_one({"_id": ObjectId(r.json()["id"])}) is not None

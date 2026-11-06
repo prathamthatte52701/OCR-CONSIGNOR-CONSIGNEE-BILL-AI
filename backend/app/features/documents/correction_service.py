@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from app.core.audit_log import log_action
+from app.features.documents.file_purge import document_snapshot
 from app.features.documents.review_warnings import review_warnings
 from app.features.ocr.extraction import (
     LINE_ITEM_FIELD_CLASSES,
@@ -115,8 +116,7 @@ async def apply_field_correction(
             "correctedAt": now,
         }
     )
-    await log_action(
-        actor_user_id,
-        "document_corrected",
-        {"documentId": str(doc["_id"]), "field": field, "byAdmin": by_admin},
-    )
+    context: dict[str, Any] = {"documentId": str(doc["_id"]), "field": field, "byAdmin": by_admin}
+    if by_admin:
+        context.update(document_snapshot(doc))
+    await log_action(actor_user_id, "document_corrected", context)

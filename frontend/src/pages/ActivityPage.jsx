@@ -15,7 +15,6 @@ const CHIPS = [
 ];
 
 const ACTION_LABELS = {
-  signup: "Account created",
   login: "Logged in",
   password_change: "Password changed",
   password_reset: "Password reset",
@@ -83,7 +82,7 @@ function describeAction(entry) {
   const ctx = entry.context || {};
   if (entry.action === "documents_download_all") {
     const n = ctx.included ?? ctx.requested;
-    return n != null ? `Bulk download (${n} files)` : "Bulk download";
+    return n != null ? `Bulk download (${n} ${n === 1 ? "file" : "files"})` : "Bulk download";
   }
   return ACTION_LABELS[entry.action] || entry.action.replace(/_/g, " ");
 }
@@ -129,6 +128,7 @@ export default function ActivityPage() {
             key={chip.value}
             type="button"
             onClick={() => pickType(chip.value)}
+            aria-pressed={type === chip.value}
             className={cn(
               "px-3 py-1 rounded-full border text-xs font-medium",
               type === chip.value
@@ -141,9 +141,28 @@ export default function ActivityPage() {
         ))}
       </div>
 
+      {query.data && (
+        <p className="mb-3 text-xs text-text-muted">
+          {total} {total === 1 ? "activity" : "activities"}
+        </p>
+      )}
+
+      {query.isError && query.data && (
+        <p className="flex items-center gap-2 mb-3 text-xs text-danger">
+          Could not refresh. Try again
+          <button
+            type="button"
+            onClick={() => query.refetch()}
+            className="rounded border border-border px-2 py-0.5 text-text hover:border-accent/50"
+          >
+            Retry
+          </button>
+        </p>
+      )}
+
       {query.isLoading ? (
         <LoadingState message="Loading activity..." />
-      ) : query.isError ? (
+      ) : query.isError && !query.data ? (
         <div className="text-center py-10">
           <p className="text-sm text-danger mb-3">
             {query.error?.userMessage || "Could not load your activity."}
@@ -175,6 +194,11 @@ export default function ActivityPage() {
                 >
                   {describeAction(entry)}
                 </span>
+                {entry.context?.byAdmin === true && (
+                  <span className="text-xs px-1.5 py-0.5 rounded-full bg-surface-raised text-text-muted shrink-0">
+                    by admin
+                  </span>
+                )}
                 {entry.action === "document_corrected" && entry.context?.field && (
                   <span className="text-xs text-text-muted shrink-0">
                     {fieldLabel(entry.context.field)}

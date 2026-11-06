@@ -175,7 +175,7 @@ DOCUMENT_ACTIONS = [
     "document_corrected",
     "documents_download_all",
 ]
-ACCOUNT_ACTIONS = ["signup", "login", "password_change", "password_reset"]
+ACCOUNT_ACTIONS = ["login", "password_change", "password_reset"]
 ACTIVITY_CONTEXT_KEYS = (
     "documentId",
     "field",
@@ -184,6 +184,7 @@ ACTIVITY_CONTEXT_KEYS = (
     "requested",
     "included",
     "skipped",
+    "byAdmin",
 )
 
 
@@ -203,7 +204,12 @@ async def get_my_activity(
     query = {"userId": current_user.id, "action": {"$in": actions}}
 
     total = await db.auditlogs.count_documents(query)
-    cursor = db.auditlogs.find(query).sort("createdAt", -1).skip((page - 1) * limit).limit(limit)
+    cursor = (
+        db.auditlogs.find(query)
+        .sort([("createdAt", -1), ("_id", -1)])
+        .skip((page - 1) * limit)
+        .limit(limit)
+    )
     logs = await cursor.to_list(length=limit)
 
     # One lookup for every document named on this page; userId is mandatory (no cross-user leak).
@@ -229,7 +235,11 @@ async def get_my_activity(
             {
                 "id": str(log["_id"]),
                 "action": log["action"],
-                "context": {k: ctx[k] for k in ACTIVITY_CONTEXT_KEYS if k in ctx},
+                "context": {
+                    k: ctx[k]
+                    for k in ACTIVITY_CONTEXT_KEYS
+                    if k in ctx and (k != "byAdmin" or isinstance(ctx[k], bool))
+                },
                 "createdAt": log.get("createdAt"),
                 "document": (
                     None

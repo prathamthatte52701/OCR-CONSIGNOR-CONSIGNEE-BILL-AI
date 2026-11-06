@@ -510,3 +510,26 @@ def test_old_purge_range_route_falls_through_to_invalid_document_id(
     resp = client.delete("/api/documents/purge-range")
     assert resp.status_code == 400
     assert "invalid document id" in resp.json()["detail"].lower()
+
+
+async def test_nuke_scrubs_name_snapshots_of_nuked_documents_only() -> None:
+    from testkit import current_db, make_document, make_user
+
+    db = current_db()
+    owner = await make_user()
+    gone = await make_document(owner["_id"], with_files=False)
+    other = await make_document(ObjectId(), with_files=False)
+    for doc in (gone, other):
+        await db.auditlogs.insert_one(
+            {
+                "userId": owner["_id"],
+                "action": "document_deleted",
+                "context": {"documentId": doc["id"], "invoiceNo": "I", "consignee": "C"},
+                "createdAt": datetime.now(UTC),
+            }
+        )
+    await admin_router._nuke_documents(db, {"userId": owner["_id"]})
+    scrubbed = await db.auditlogs.find_one({"context.documentId": gone["id"]})
+    untouched = await db.auditlogs.find_one({"context.documentId": other["id"]})
+    assert "invoiceNo" not in scrubbed["context"] and "consignee" not in scrubbed["context"]
+    assert untouched["context"]["invoiceNo"] == "I"

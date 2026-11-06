@@ -3,6 +3,7 @@ telemetry, audit log viewer, and bulk "nuke" deletion (per-user or global, age-b
 Year+Month, double-password + rate-limited - see nuke_user/nuke_global). Role is always
 re-verified server-side via require_admin's DB lookup - never trusted from a JWT claim."""
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -39,11 +40,13 @@ from app.features.documents.file_purge import (
     PURGE_FAILED_MESSAGE,
     PURGE_OK_MESSAGE,
     best_effort_purge_files,
+    document_snapshot,
     purge_parts,
 )
 from app.features.documents.gridfs_service import delete_file, download_buffer
 from app.features.documents.schemas import CorrectRequest
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 NUKE_ATTEMPT_ACTION = "admin_nuke_attempt"
@@ -160,6 +163,17 @@ async def _nuke_documents(db: AsyncIOMotorDatabase, query: dict[str, Any]) -> in
     result = await db.documents.delete_many(query)
     if doc_ids:
         await db.corrections.delete_many({"documentId": {"$in": doc_ids}})
+        # Audit rows keep a name snapshot for one-by-one deletes; a nuke must not leave it.
+        # No index on context.documentId: a rare admin action, so a scan is acceptable.
+        try:
+            id_strings = [str(i) for i in doc_ids]
+            for start in range(0, len(id_strings), 500):
+                await db.auditlogs.update_many(
+                    {"context.documentId": {"$in": id_strings[start : start + 500]}},
+                    {"$unset": {"context.invoiceNo": "", "context.consignee": ""}},
+                )
+        except Exception as exc:  # noqa: BLE001 - the scrub must not fail the nuke
+            logger.error("nuke audit scrub failed: class=%s", type(exc).__name__)
     return result.deleted_count
 
 
@@ -565,7 +579,9 @@ async def admin_delete_document(
     await db.documents.delete_one({"_id": doc["_id"]})
     await db.corrections.delete_many({"documentId": doc["_id"]})
     await log_action(
-        current_user.id, "document_deleted", {"documentId": document_id, "byAdmin": True}
+        current_user.id,
+        "document_deleted",
+        {"documentId": document_id, "byAdmin": True, **document_snapshot(doc)},
     )
     message = DELETE_FAILED_MESSAGE if cleanup_failed else DELETE_OK_MESSAGE
     return {"message": message, "gridFsCleanupFailed": cleanup_failed}
@@ -583,7 +599,9 @@ async def admin_purge_document_files(
         await db.documents.update_one({"_id": doc["_id"]}, {"$set": updates})
 
     await log_action(
-        current_user.id, "document_file_purged", {"documentId": document_id, "byAdmin": True}
+        current_user.id,
+        "document_file_purged",
+        {"documentId": document_id, "byAdmin": True, **document_snapshot(doc)},
     )
     message = PURGE_FAILED_MESSAGE if cleanup_failed else PURGE_OK_MESSAGE
     return {"message": message, "gridFsCleanupFailed": cleanup_failed}
@@ -607,7 +625,12 @@ async def list_logs(
         query["userId"] = ObjectId(user_id)
 
     total = await db.auditlogs.count_documents(query)
-    cursor = db.auditlogs.find(query).sort("createdAt", -1).skip((page - 1) * limit).limit(limit)
+    cursor = (
+        db.auditlogs.find(query)
+        .sort([("createdAt", -1), ("_id", -1)])
+        .skip((page - 1) * limit)
+        .limit(limit)
+    )
     logs = await cursor.to_list(length=limit)
 
     owner_ids = {log["userId"] for log in logs if log.get("userId")}
