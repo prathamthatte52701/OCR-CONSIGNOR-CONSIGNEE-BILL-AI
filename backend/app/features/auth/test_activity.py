@@ -82,7 +82,6 @@ async def test_activity_returns_only_callers_own_entries(
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 3
-    assert all(item["userId"] == str(user_a.id) for item in body["items"])
     assert all(item["action"] == "document_uploaded" for item in body["items"])
 
 
@@ -180,7 +179,6 @@ async def test_userid_query_param_is_ignored_and_cannot_leak_other_users_data(
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 2  # still only user A's own count, param silently ignored
-    assert all(item["userId"] == str(user_a.id) for item in body["items"])
 
 
 async def test_invalid_page_or_limit_returns_422(
@@ -202,3 +200,93 @@ async def test_unauthenticated_request_is_rejected(client: TestClient) -> None:
         assert resp.status_code == 401
     finally:
         pass  # each test re-sets the override via _act_as before making its own requests
+
+
+# ------------------------------------------------------------------ Feature 9: type filter + join
+
+
+async def _log(db: AsyncIOMotorDatabase, user_id: ObjectId, action: str, **ctx: object) -> None:
+    await db.auditlogs.insert_one(
+        {"userId": user_id, "action": action, "context": ctx, "createdAt": datetime.now(UTC)}
+    )
+
+
+async def _doc(db: AsyncIOMotorDatabase, user_id: ObjectId, **fields: str) -> ObjectId:
+    res = await db.documents.insert_one({"userId": user_id, "uploadStatus": "processed", **fields})
+    return res.inserted_id
+
+
+async def test_type_filter_and_internal_actions_hidden(
+    db: AsyncIOMotorDatabase, client: TestClient, _cleanup: list[ObjectId]
+) -> None:
+    user = _user()
+    _cleanup.append(user.id)
+    for action in ("document_uploaded", "documents_download_all", "login", "password_change"):
+        await _log(db, user.id, action)
+    await _log(db, user.id, "admin_viewed_document")
+    _act_as(user)
+
+    def actions(**params: str) -> set[str]:
+        r = client.get("/api/auth/me/activity", params=params)
+        assert r.status_code == 200
+        return {i["action"] for i in r.json()["items"]}
+
+    assert actions(type="documents") == {"document_uploaded", "documents_download_all"}
+    assert actions(type="account") == {"login", "password_change"}
+    assert "admin_viewed_document" not in actions()  # default = all
+    assert len(actions(type="all")) == 4
+    assert client.get("/api/auth/me/activity", params={"type": "nope"}).status_code == 422
+
+
+async def test_document_join_and_context_trim(
+    db: AsyncIOMotorDatabase, client: TestClient, _cleanup: list[ObjectId]
+) -> None:
+    user = _user()
+    _cleanup.append(user.id)
+    doc_id = await _doc(db, user.id, invoiceNo="INV-9", consignee="ACME", consigneeCode="42")
+    await _log(
+        db, user.id, "document_corrected", documentId=str(doc_id), field="consignee",
+        byAdmin=True, secret="x",
+    )  # fmt: skip
+    _act_as(user)
+    try:
+        item = client.get("/api/auth/me/activity").json()["items"][0]
+        assert item["document"] == {
+            "id": str(doc_id), "invoiceNo": "INV-9", "consigneeCode": "42", "consignee": "ACME",
+        }  # fmt: skip
+        assert item["context"] == {"documentId": str(doc_id), "field": "consignee"}
+    finally:
+        await db.documents.delete_one({"_id": doc_id})
+
+
+async def test_other_users_document_and_bad_id_do_not_leak_or_crash(
+    db: AsyncIOMotorDatabase, client: TestClient, _cleanup: list[ObjectId]
+) -> None:
+    me, other = _user(), _user()
+    _cleanup.extend([me.id, other.id])
+    theirs = await _doc(db, other.id, invoiceNo="SECRET", consignee="THEM")
+    await _log(db, me.id, "document_reprocessed", documentId=str(theirs))
+    await _log(db, me.id, "document_reprocessed", documentId="not-an-object-id")
+    _act_as(me)
+    try:
+        r = client.get("/api/auth/me/activity")
+        assert r.status_code == 200
+        assert [i["document"] for i in r.json()["items"]] == [None, None]
+        assert "SECRET" not in r.text
+    finally:
+        await db.documents.delete_one({"_id": theirs})
+
+
+async def test_delete_route_logs_name_and_activity_shows_it(
+    db: AsyncIOMotorDatabase, client: TestClient, _cleanup: list[ObjectId]
+) -> None:
+    user = _user()
+    _cleanup.append(user.id)
+    doc_id = await _doc(db, user.id, invoiceNo="GONE-1", consignee="X" * 150)
+    _act_as(user)
+    assert client.delete(f"/api/documents/{doc_id}").status_code == 200
+    item = client.get("/api/auth/me/activity").json()["items"][0]
+    assert item["action"] == "document_deleted"
+    assert item["document"] is None
+    assert item["context"]["invoiceNo"] == "GONE-1"
+    assert item["context"]["consignee"] == "X" * 100

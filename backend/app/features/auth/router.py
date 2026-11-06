@@ -1,13 +1,15 @@
 """Auth routes: signup (no auto-login), login, profile, change-password, forgot-password."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pymongo.errors import DuplicateKeyError
 
 from app.core.audit_log import log_action
 from app.core.database import get_database
+from app.core.object_id import is_valid_object_id
 from app.core.rate_limit import check_login_email_limit, limiter
 from app.core.security import DUMMY_PASSWORD_HASH, hash_password, sign_token, verify_password
 from app.core.validators import (
@@ -165,25 +167,82 @@ async def update_me(
     )
 
 
+DOCUMENT_ACTIONS = [
+    "document_uploaded",
+    "document_reprocessed",
+    "document_deleted",
+    "document_file_purged",
+    "document_corrected",
+    "documents_download_all",
+]
+ACCOUNT_ACTIONS = ["signup", "login", "password_change", "password_reset"]
+ACTIVITY_CONTEXT_KEYS = (
+    "documentId",
+    "field",
+    "invoiceNo",
+    "consignee",
+    "requested",
+    "included",
+    "skipped",
+)
+
+
 @router.get("/me/activity", response_model=ActivityListResponse)
 async def get_my_activity(
+    type: Literal["all", "documents", "account"] = Query("all"),
     page: int = Query(1, ge=1),
     limit: int = Query(40, ge=1, le=100),
     current_user: CurrentUser = Depends(get_current_user),
 ) -> ActivityListResponse:
     db = get_database()
-    query = {"userId": current_user.id}
+    actions = {
+        "all": DOCUMENT_ACTIONS + ACCOUNT_ACTIONS,
+        "documents": DOCUMENT_ACTIONS,
+        "account": ACCOUNT_ACTIONS,
+    }[type]
+    query = {"userId": current_user.id, "action": {"$in": actions}}
 
     total = await db.auditlogs.count_documents(query)
     cursor = db.auditlogs.find(query).sort("createdAt", -1).skip((page - 1) * limit).limit(limit)
     logs = await cursor.to_list(length=limit)
 
+    # One lookup for every document named on this page; userId is mandatory (no cross-user leak).
+    doc_ids = {
+        ObjectId(str(log["context"]["documentId"]))
+        for log in logs
+        if isinstance(log.get("context"), dict)
+        and is_valid_object_id(str(log["context"].get("documentId", "")))
+    }
+    found: dict[str, dict[str, Any]] = {}
+    if doc_ids:
+        rows = db.documents.find(
+            {"_id": {"$in": list(doc_ids)}, "userId": current_user.id},
+            {"invoiceNo": 1, "consigneeCode": 1, "consignee": 1},
+        )
+        found = {str(r["_id"]): r async for r in rows}
+
     items = []
     for log in logs:
-        entry = dict(log)
-        entry["id"] = str(entry.pop("_id"))
-        entry["userId"] = str(entry["userId"]) if entry.get("userId") else None
-        items.append(entry)
+        ctx = log.get("context") if isinstance(log.get("context"), dict) else {}
+        row = found.get(str(ctx.get("documentId", "")))
+        items.append(
+            {
+                "id": str(log["_id"]),
+                "action": log["action"],
+                "context": {k: ctx[k] for k in ACTIVITY_CONTEXT_KEYS if k in ctx},
+                "createdAt": log.get("createdAt"),
+                "document": (
+                    None
+                    if row is None
+                    else {
+                        "id": str(row["_id"]),
+                        "invoiceNo": row.get("invoiceNo"),
+                        "consigneeCode": row.get("consigneeCode"),
+                        "consignee": row.get("consignee"),
+                    }
+                ),
+            }
+        )
     return ActivityListResponse(items=items, total=total, page=page, limit=limit)
 
 

@@ -849,7 +849,11 @@ async def delete_document(
     cleanup_failed = await best_effort_purge_files(doc)
     await db.documents.delete_one({"_id": doc["_id"]})
     await db.corrections.delete_many({"documentId": doc["_id"]})
-    await log_action(current_user.id, "document_deleted", {"documentId": document_id})
+    context = {"documentId": document_id}
+    for key in ("invoiceNo", "consignee"):  # kept so the activity list can still name it
+        if isinstance(doc.get(key), str) and doc[key]:
+            context[key] = doc[key][:100]
+    await log_action(current_user.id, "document_deleted", context)
     message = DELETE_FAILED_MESSAGE if cleanup_failed else DELETE_OK_MESSAGE
     return {"message": message, "gridFsCleanupFailed": cleanup_failed}
 
