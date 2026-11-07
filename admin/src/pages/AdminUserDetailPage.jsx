@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { toast } from "sonner";
-import { Trash2, AlertTriangle } from "lucide-react";
+import { Trash2, AlertTriangle, Eraser } from "lucide-react";
 import { adminApi } from "../api/admin";
 import LoadingState from "../components/LoadingState";
 import ConfirmModal from "../components/ConfirmModal";
 import NukeDialog from "../components/NukeDialog";
+import PurgeMonthsDialog from "../components/PurgeMonthsDialog";
 import { formatIST } from "../lib/formatDate";
 
 const NUKE_USER_PHRASE = "NUKE USER";
@@ -18,6 +19,7 @@ export default function AdminUserDetailPage() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [nukeOpen, setNukeOpen] = useState(false);
   const [nukeBusy, setNukeBusy] = useState(false);
+  const [purgeOpen, setPurgeOpen] = useState(false);
   const [emailEditing, setEmailEditing] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [emailConfirmOpen, setEmailConfirmOpen] = useState(false);
@@ -60,7 +62,7 @@ export default function AdminUserDetailPage() {
     setEmailConfirmOpen(false);
     setEmailBusy(true);
     try {
-      const updated = await adminApi.updateUser(id, { email: newEmail.trim() });
+      const updated = await adminApi.changeUserEmail(id, newEmail.trim());
       setUser(updated);
       setEmailEditing(false);
       toast.success("Email changed. The user was logged out everywhere.");
@@ -167,6 +169,12 @@ export default function AdminUserDetailPage() {
               >
                 <AlertTriangle size={12} /> Nuke this user
               </button>
+              <button
+                onClick={() => setPurgeOpen(true)}
+                className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-danger/40 text-danger hover:bg-danger/10"
+              >
+                <Eraser size={12} /> Purge old documents
+              </button>
             </div>
           </div>
         </div>
@@ -207,6 +215,18 @@ export default function AdminUserDetailPage() {
         confirmLabel="Change email"
         onConfirm={handleEmailChange}
         onCancel={() => setEmailConfirmOpen(false)}
+      />
+
+      <PurgeMonthsDialog
+        open={purgeOpen}
+        userId={id}
+        label={`${user.username}'s documents`}
+        confirmationPhrase={NUKE_USER_PHRASE}
+        onClose={() => setPurgeOpen(false)}
+        onDone={() => {
+          setPurgeOpen(false);
+          load();
+        }}
       />
 
       <NukeDialog

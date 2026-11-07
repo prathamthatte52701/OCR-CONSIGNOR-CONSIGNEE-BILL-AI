@@ -10,6 +10,21 @@ export const adminApi = {
     client.post(`/admin/users/${id}/reject`, { reason }).then((r) => r.data),
   nukeUser: (id, data) => client.post(`/admin/users/${id}/nuke`, data).then((r) => r.data),
   nukeGlobal: (data) => client.post("/admin/nuke-global", data).then((r) => r.data),
+  changeUserEmail: (id, email) =>
+    client.put(`/admin/users/${id}/email`, { email }).then((r) => r.data),
+
+  system: () => client.get("/admin/system").then((r) => r.data),
+  maintenanceActivity: () => client.get("/admin/maintenance-activity").then((r) => r.data),
+  purgePreview: (months, userId) =>
+    client.get("/admin/purge-months/preview", { params: { months, userId } }).then((r) => r.data),
+  // DELETE with a confirmation body: axios takes it as `data`.
+  purgeMonths: (months, data, userId) =>
+    client
+      .delete(userId ? `/admin/users/${userId}/purge-months` : "/admin/purge-months", {
+        params: { months },
+        data,
+      })
+      .then((r) => r.data),
 
   documents: (params) => client.get("/admin/documents", { params }).then((r) => r.data),
   document: (id) => client.get(`/admin/documents/${id}`).then((r) => r.data),

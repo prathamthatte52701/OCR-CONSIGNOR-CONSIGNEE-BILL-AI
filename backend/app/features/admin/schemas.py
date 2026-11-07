@@ -34,6 +34,18 @@ class AdminNukeRequest(CamelModel):
     month: int | None = None
 
 
+class PurgeMonthsRequest(CamelModel):
+    """Confirmation body for the age-based purge (the months value is a query parameter)."""
+
+    password: str = Field(max_length=128)
+    confirm_password: str = Field(max_length=128)
+    confirmation_phrase: str = Field(max_length=64)
+
+
+class EmailChangeRequest(CamelModel):
+    email: str = Field(max_length=254)
+
+
 class ListResponse(CamelModel):
     items: list[dict[str, Any]]
     total: int

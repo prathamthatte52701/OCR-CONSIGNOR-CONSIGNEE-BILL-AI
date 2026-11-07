@@ -144,6 +144,11 @@ async def login(request: Request, body: LoginRequest) -> AuthResponse:
         {"_id": user["_id"], "approvalNoticePending": True},
         {"$set": {"approvalNoticePending": False}},
     )
+    # One-time "your email was changed by an admin" notice, claimed the same way.
+    email_notice = await db.users.find_one_and_update(
+        {"_id": user["_id"], "emailChangeNoticePending": True},
+        {"$set": {"emailChangeNoticePending": False}},
+    )
     token = sign_token(str(user["_id"]), user.get("tokenVersion", 0), user.get("role", "user"))
     await log_action(user["_id"], "login", {})
     return AuthResponse(
@@ -152,6 +157,7 @@ async def login(request: Request, body: LoginRequest) -> AuthResponse:
         email=user["email"],
         role=user.get("role", "user"),
         just_approved=claimed is not None,
+        email_changed=email_notice is not None,
         approved_at=iso_utc(claimed.get("decidedAt")) if claimed else None,
     )
 
@@ -212,7 +218,12 @@ DOCUMENT_ACTIONS = [
     "document_corrected",
     "documents_download_all",
 ]
-ACCOUNT_ACTIONS = ["login", "password_change", "password_reset_requested"]
+ACCOUNT_ACTIONS = [
+    "login",
+    "password_change",
+    "password_reset_requested",
+    "email_changed_by_admin",
+]
 ACTIVITY_CONTEXT_KEYS = (
     "documentId",
     "field",

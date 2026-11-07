@@ -31,6 +31,7 @@ class AuthResponse(CamelModel):
     email: str
     role: str
     just_approved: bool = False
+    email_changed: bool = False
     approved_at: str | None = None
 
 

@@ -4,6 +4,8 @@ Year+Month, double-password + rate-limited - see nuke_user/nuke_global). Role is
 re-verified server-side via require_admin's DB lookup - never trusted from a JWT claim."""
 
 import logging
+import re
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
@@ -22,7 +24,9 @@ from app.core.security import hash_password, verify_password
 from app.core.validators import is_valid_email, is_valid_username, normalize_email, password_problem
 from app.features.admin.schemas import (
     AdminNukeRequest,
+    EmailChangeRequest,
     ListResponse,
+    PurgeMonthsRequest,
     RejectRequest,
     TelemetryResponse,
     TempPasswordRequest,
@@ -59,6 +63,8 @@ ADMIN_DOWNLOADED_PART1 = "admin_downloaded_part1"
 ADMIN_DOWNLOADED_PART2 = "admin_downloaded_part2"
 CONFIRMATION_PHRASE_USER_NUKE = "NUKE USER"
 CONFIRMATION_PHRASE_GLOBAL_NUKE = "NUKE ALL"
+PURGE_MONTH_CHOICES = (1, 2, 3, 6, 9)
+_STARTED_AT = time.monotonic()
 
 
 def _serialize_user(user: dict[str, Any]) -> dict[str, Any]:
@@ -520,6 +526,62 @@ async def update_user(
     return _serialize_user(updated)
 
 
+@router.put("/users/{user_id}/email")
+async def change_user_email(
+    user_id: str, body: EmailChangeRequest, current_user: CurrentUser = Depends(require_admin)
+) -> dict[str, Any]:
+    """Changes a user's login email. Signs the user out everywhere (tokenVersion bump) and
+    leaves a one-time notice for their next login. Never touches a password."""
+    if not is_valid_object_id(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user id.")
+    if user_id == str(current_user.id):
+        raise HTTPException(status_code=400, detail="You cannot change your own email here.")
+    db = get_database()
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    _guard_other_admin(user, current_user)
+
+    email = normalize_email(body.email)
+    if not is_valid_email(email):
+        raise HTTPException(status_code=400, detail="Invalid email address.")
+    if email == str(user["email"]).lower():
+        raise HTTPException(status_code=400, detail="That is already this user's email.")
+    taken = await db.users.find_one(
+        {
+            "email": {"$regex": f"^{re.escape(email)}$", "$options": "i"},
+            "_id": {"$ne": user["_id"]},
+        }
+    )
+    if taken is not None:
+        raise HTTPException(status_code=400, detail="That email is already in use.")
+
+    try:
+        await db.users.update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {
+                    "email": email,
+                    "updatedAt": datetime.now(UTC),
+                    "emailChangeNoticePending": True,
+                },
+                "$inc": {"tokenVersion": 1},
+            },
+        )
+    except DuplicateKeyError:  # lost a race against another signup / edit
+        raise HTTPException(status_code=400, detail="That email is already in use.") from None
+    # One row on the user (My Activity) and one on the admin; ids and addresses only.
+    await log_action(
+        user["_id"],
+        "email_changed_by_admin",
+        {"byAdmin": True, "adminId": str(current_user.id), "newEmail": email},
+    )
+    await log_action(current_user.id, "admin_changed_user_email", {"userId": user_id})
+    updated = await db.users.find_one({"_id": user["_id"]})
+    assert updated is not None
+    return _serialize_user(updated)
+
+
 @router.delete("/users/{user_id}")
 async def delete_user(
     user_id: str, current_user: CurrentUser = Depends(require_admin)
@@ -654,6 +716,215 @@ async def nuke_global(
         "message": f"Deleted {deleted_count} documents across all users.",
         "deletedCount": deleted_count,
     }
+
+
+def _purge_query(months: int, user_id: ObjectId | None) -> dict[str, Any]:
+    if months not in PURGE_MONTH_CHOICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"months must be one of {', '.join(str(m) for m in PURGE_MONTH_CHOICES)}.",
+        )
+    query: dict[str, Any] = {"createdAt": {"$lt": datetime.now(UTC) - timedelta(days=30 * months)}}
+    if user_id is not None:  # per-user purge is scoped by userId and nothing else
+        query["userId"] = user_id
+    return query
+
+
+async def _purge_preview(db: AsyncIOMotorDatabase, query: dict[str, Any]) -> dict[str, int]:
+    """Dry run: how many documents match and how many stored bytes would be freed."""
+
+    def size(part: str) -> dict[str, Any]:
+        return {
+            "$cond": [{"$ne": [f"${part}FilePurged", True]}, {"$ifNull": [f"${part}Size", 0]}, 0]
+        }
+
+    rows = await db.documents.aggregate(
+        [
+            {"$match": query},
+            {
+                "$group": {
+                    "_id": None,
+                    "documents": {"$sum": 1},
+                    "bytes": {"$sum": {"$add": [size("part1"), size("part2")]}},
+                }
+            },
+        ]
+    ).to_list(length=1)
+    row = rows[0] if rows else {}
+    return {"documents": row.get("documents", 0), "bytes": row.get("bytes", 0)}
+
+
+async def _check_purge_gate(
+    db: AsyncIOMotorDatabase,
+    admin_id: ObjectId,
+    body: PurgeMonthsRequest,
+    phrase: str,
+    scope: dict[str, Any],
+) -> None:
+    """The same gate as nuke_user / nuke_global: shared rate limit, exact phrase, password
+    typed twice, then the admin's own password. Every refusal is logged as a nuke attempt."""
+    await _enforce_nuke_rate_limit(db, admin_id)
+    refusal: tuple[str, str] | None = None
+    if body.confirmation_phrase != phrase:
+        refusal = ("bad_phrase", f"Type '{phrase}' exactly to confirm.")
+    elif body.password != body.confirm_password:
+        refusal = ("password_mismatch", "Password and confirmation do not match.")
+    else:
+        admin = await db.users.find_one({"_id": admin_id})
+        if admin is None or not verify_password(body.password, admin["passwordHash"]):
+            refusal = ("bad_password", "Incorrect password.")
+    if refusal is not None:
+        await log_action(admin_id, NUKE_ATTEMPT_ACTION, {"reason": refusal[0], **scope})
+        raise HTTPException(status_code=400, detail=refusal[1])
+
+
+async def _run_purge(
+    db: AsyncIOMotorDatabase, admin_id: ObjectId, query: dict[str, Any], scope: dict[str, Any]
+) -> dict[str, Any]:
+    freed = (await _purge_preview(db, query))["bytes"]
+    deleted_count = await _nuke_documents(db, query)
+    # One audit entry per purge, counts only.
+    await log_action(
+        admin_id,
+        NUKE_ATTEMPT_ACTION,
+        {"reason": "success", **scope, "deletedCount": deleted_count, "bytes": freed},
+    )
+    return {
+        "message": f"Deleted {deleted_count} documents older than {scope['months']} months.",
+        "deletedCount": deleted_count,
+        "bytes": freed,
+    }
+
+
+@router.get("/purge-months/preview")
+async def preview_purge_months(
+    months: int = Query(...),
+    user_id: str | None = Query(None, alias="userId"),
+    current_user: CurrentUser = Depends(require_admin),
+) -> dict[str, int]:
+    """Dry-run count for either purge: add userId for the per-user one."""
+    if user_id is not None and not is_valid_object_id(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user id.")
+    query = _purge_query(months, ObjectId(user_id) if user_id else None)
+    return {"months": months, **await _purge_preview(get_database(), query)}
+
+
+@router.delete("/users/{user_id}/purge-months")
+async def purge_user_months(
+    user_id: str,
+    body: PurgeMonthsRequest,
+    months: int = Query(...),
+    current_user: CurrentUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Deletes one user's documents older than `months` (1, 2, 3, 6 or 9), oldest included,
+    with the full nuke gate. Scoped by userId only."""
+    if not is_valid_object_id(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user id.")
+    query = _purge_query(months, ObjectId(user_id))
+    db = get_database()
+    target = await db.users.find_one({"_id": ObjectId(user_id)})
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    _guard_other_admin(target, current_user)
+    scope = {"scope": "user", "purge": "months", "months": months, "targetUserId": user_id}
+    await _check_purge_gate(db, current_user.id, body, CONFIRMATION_PHRASE_USER_NUKE, scope)
+    return await _run_purge(db, current_user.id, query, scope)
+
+
+@router.delete("/purge-months")
+async def purge_global_months(
+    body: PurgeMonthsRequest,
+    months: int = Query(...),
+    current_user: CurrentUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Global version of purge_user_months. Touches documents only: never users, admins or
+    the audit log."""
+    query = _purge_query(months, None)
+    db = get_database()
+    scope = {"scope": "global", "purge": "months", "months": months}
+    await _check_purge_gate(db, current_user.id, body, CONFIRMATION_PHRASE_GLOBAL_NUKE, scope)
+    return await _run_purge(db, current_user.id, query, scope)
+
+
+@router.get("/system")
+async def system_info(current_user: CurrentUser = Depends(require_admin)) -> dict[str, Any]:
+    """Read-only health and storage numbers. No hostnames, URIs or settings."""
+    db = get_database()
+    started = time.perf_counter()
+    try:
+        await db.command("ping")
+        db_ok = True
+    except Exception:  # noqa: BLE001 - a dead database is a result here, not an error
+        db_ok = False
+    ping_ms = round((time.perf_counter() - started) * 1000, 1)
+
+    rows = (
+        await db["fs.files"]
+        .aggregate([{"$group": {"_id": None, "files": {"$sum": 1}, "bytes": {"$sum": "$length"}}}])
+        .to_list(length=1)
+    )
+    storage = rows[0] if rows else {}
+    return {
+        "db": {"ok": db_ok, "pingMs": ping_ms},
+        "uptimeSeconds": int(time.monotonic() - _STARTED_AT),
+        "storage": {"files": storage.get("files", 0), "bytes": storage.get("bytes", 0)},
+        "documentsProcessed": await db.documents.count_documents({"uploadStatus": "processed"}),
+        "documentsTotal": await db.documents.count_documents({}),
+        "orphanedFiles": await db.orphanedfiles.count_documents({}),
+    }
+
+
+MAINTENANCE_ACTIONS = [
+    NUKE_ATTEMPT_ACTION,
+    "document_deleted",
+    "document_file_purged",
+    "orphaned_file_dismissed",
+    "orphaned_file_retry_succeeded",
+    "orphaned_file_retry_failed",
+    "user_deleted",
+]
+MAINTENANCE_CONTEXT_KEYS = (
+    "reason",
+    "scope",
+    "purge",
+    "months",
+    "deletedCount",
+    "bytes",
+    "documentId",
+    "userId",
+    "targetUserId",
+    "byAdmin",
+)
+
+
+@router.get("/maintenance-activity")
+async def maintenance_activity(
+    limit: int = Query(30, ge=1, le=100), current_user: CurrentUser = Depends(require_admin)
+) -> dict[str, Any]:
+    """Recent deletes, purges, orphan actions and nukes from the audit log (a refused nuke
+    attempt shows too)."""
+    db = get_database()
+    logs = (
+        await db.auditlogs.find({"action": {"$in": MAINTENANCE_ACTIONS}})
+        .sort([("createdAt", -1), ("_id", -1)])
+        .limit(limit)
+        .to_list(length=limit)
+    )
+    admin_ids = list({log["userId"] for log in logs if log.get("userId")})
+    names = {u["_id"]: u["username"] async for u in db.users.find({"_id": {"$in": admin_ids}})}
+    items = []
+    for log in logs:
+        ctx = log.get("context") if isinstance(log.get("context"), dict) else {}
+        items.append(
+            {
+                "id": str(log["_id"]),
+                "action": log["action"],
+                "by": names.get(log.get("userId")),
+                "context": {k: ctx[k] for k in MAINTENANCE_CONTEXT_KEYS if k in ctx},
+                "createdAt": log.get("createdAt"),
+            }
+        )
+    return {"items": items}
 
 
 @router.get("/documents", response_model=ListResponse)

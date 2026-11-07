@@ -12,6 +12,11 @@ export function useLogin() {
     onSuccess: (data) => {
       setAuth(data);
       toast.success(`Welcome back, ${data.username}.`);
+      if (data.emailChanged) {
+        toast.info("An admin changed your email. Use this address to log in from now on.", {
+          duration: 10000,
+        });
+      }
       const params = new URLSearchParams(window.location.search);
       navigate(params.get("next") || "/dashboard");
     },

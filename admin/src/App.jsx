@@ -12,6 +12,7 @@ import AdminDocumentDetailPage from "./pages/AdminDocumentDetailPage";
 import AdminLogsPage from "./pages/AdminLogsPage";
 import AdminOrphanedFilesPage from "./pages/AdminOrphanedFilesPage";
 import PasswordRequestsPage from "./pages/PasswordRequestsPage";
+import AdminMaintenancePage from "./pages/AdminMaintenancePage";
 
 export default function App() {
   return (
@@ -30,6 +31,7 @@ export default function App() {
             <Route path="/documents/:id" element={<AdminDocumentDetailPage />} />
             <Route path="/logs" element={<AdminLogsPage />} />
             <Route path="/orphaned-files" element={<AdminOrphanedFilesPage />} />
+            <Route path="/maintenance" element={<AdminMaintenancePage />} />
             <Route path="/profile" element={<AdminProfilePage />} />
           </Route>
         </Route>
