@@ -53,7 +53,7 @@ export default function AppLayout() {
               aria-label={label}
               title={label}
               aria-expanded={isDesktop ? railShown : drawerShown}
-              aria-controls="app-sidebar"
+              aria-controls={railShown || drawerShown ? "app-sidebar" : undefined}
               className="rounded p-1.5 text-text-muted hover:bg-surface-raised hover:text-text"
             >
               <ToggleIcon size={18} aria-hidden="true" />

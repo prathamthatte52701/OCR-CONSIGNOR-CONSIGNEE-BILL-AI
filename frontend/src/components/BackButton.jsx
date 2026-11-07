@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { cn } from "../lib/utils";
-import { recordLocation, safePath } from "./routeHistory";
+import { safePath } from "./routeHistory";
 
 // Goes back inside the app only: browser history when this tab has in-app history (so a list
 // keeps its filters and page, they live in the URL), otherwise `fallback` (replace, so Back never
@@ -13,9 +13,8 @@ export default function BackButton({ fallback = "/dashboard", to, className = ""
   const busy = useRef(false);
 
   useEffect(() => {
-    recordLocation(location.pathname);
     busy.current = false;
-  }, [location.key, location.pathname]);
+  }, [location.key]);
 
   const handleClick = () => {
     if (to) return navigate(safePath(to, fallback));
