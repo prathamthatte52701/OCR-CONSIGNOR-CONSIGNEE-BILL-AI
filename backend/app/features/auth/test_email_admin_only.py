@@ -88,22 +88,20 @@ async def test_anonymous_cannot_patch_profile(client: TestClient) -> None:
     assert client.patch("/api/auth/me", json={"username": "abc"}).status_code == 401
 
 
-# ----------------------------------------------------------- PATCH /api/admin/users/{id}
+# ----------------------------------------------------------- PUT /api/admin/users/{id}/email
 
 
 async def test_admin_can_change_a_users_email_and_it_is_audited(client: TestClient) -> None:
     admin, user = await make_user("admin"), await make_user()
-    r = client.patch(
-        f"/api/admin/users/{user['id']}",
+    r = client.put(
+        f"/api/admin/users/{user['id']}/email",
         json={"email": "  New.Name@Example.INVALID "},
         headers=admin["headers"],
     )
     assert r.status_code == 200 and r.json()["email"] == "new.name@example.invalid"  # normalized
-    log = await current_db().auditlogs.find_one({"action": "user_updated"})
-    assert log is not None and log["userId"] == admin["_id"]
-    assert log["context"]["previousEmail"] == user["email"]
+    log = await current_db().auditlogs.find_one({"action": "email_changed_by_admin"})
+    assert log is not None and log["userId"] == user["_id"]
     assert log["context"]["newEmail"] == "new.name@example.invalid"
-    assert "email" in log["context"]["fields"]
 
 
 async def test_email_change_revokes_sessions_and_user_logs_in_with_the_new_address(
@@ -111,8 +109,8 @@ async def test_email_change_revokes_sessions_and_user_logs_in_with_the_new_addre
 ) -> None:
     admin, user = await make_user("admin"), await make_user()
     assert client.get("/api/auth/me", headers=user["headers"]).status_code == 200
-    client.patch(
-        f"/api/admin/users/{user['id']}",
+    client.put(
+        f"/api/admin/users/{user['id']}/email",
         json={"email": "moved@example.invalid"},
         headers=admin["headers"],
     )
@@ -129,8 +127,8 @@ async def test_email_change_revokes_sessions_and_user_logs_in_with_the_new_addre
 async def test_admin_cannot_use_an_email_that_belongs_to_someone_else(client: TestClient) -> None:
     admin, one, two = await make_user("admin"), await make_user(), await make_user()
     for attempt in (two["email"], two["email"].upper(), f" {two['email']} "):
-        r = client.patch(
-            f"/api/admin/users/{one['id']}", json={"email": attempt}, headers=admin["headers"]
+        r = client.put(
+            f"/api/admin/users/{one['id']}/email", json={"email": attempt}, headers=admin["headers"]
         )
         assert r.status_code == 400 and "already in use" in r.json()["detail"]
     stored = await current_db().users.find_one({"_id": one["_id"]})
@@ -140,8 +138,8 @@ async def test_admin_cannot_use_an_email_that_belongs_to_someone_else(client: Te
 @pytest.mark.parametrize("bad", ["", "no-at-sign", "a@b", "two@@x.io", "sp ace@x.io"])
 async def test_admin_email_must_be_valid(client: TestClient, bad: str) -> None:
     admin, user = await make_user("admin"), await make_user()
-    r = client.patch(
-        f"/api/admin/users/{user['id']}", json={"email": bad}, headers=admin["headers"]
+    r = client.put(
+        f"/api/admin/users/{user['id']}/email", json={"email": bad}, headers=admin["headers"]
     )
     assert r.status_code == 400
     stored = await current_db().users.find_one({"_id": user["_id"]})
@@ -150,28 +148,28 @@ async def test_admin_email_must_be_valid(client: TestClient, bad: str) -> None:
 
 async def test_admin_setting_the_same_email_is_a_noop(client: TestClient) -> None:
     admin, user = await make_user("admin"), await make_user()
-    r = client.patch(
-        f"/api/admin/users/{user['id']}",
+    r = client.put(
+        f"/api/admin/users/{user['id']}/email",
         json={"email": user["email"].upper()},
         headers=admin["headers"],
     )
-    assert r.status_code == 200
+    assert r.status_code == 400
     stored = await current_db().users.find_one({"_id": user["_id"]})
     assert stored is not None and stored["tokenVersion"] == 0  # no needless logout
-    assert await current_db().auditlogs.count_documents({"action": "user_updated"}) == 0
+    assert await current_db().auditlogs.count_documents({"action": "email_changed_by_admin"}) == 0
 
 
 async def test_non_admin_cannot_use_the_admin_email_route(client: TestClient) -> None:
     attacker, victim = await make_user(), await make_user()
     for target in (victim, attacker):
-        r = client.patch(
-            f"/api/admin/users/{target['id']}",
+        r = client.put(
+            f"/api/admin/users/{target['id']}/email",
             json={"email": "evil@example.invalid"},
             headers=attacker["headers"],
         )
         assert r.status_code == 403
     assert (
-        client.patch(f"/api/admin/users/{victim['id']}", json={"email": "e@x.io"}).status_code
+        client.put(f"/api/admin/users/{victim['id']}/email", json={"email": "e@x.io"}).status_code
         == 401
     )
 

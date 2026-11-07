@@ -179,3 +179,40 @@ async def test_email_edit_rules_and_effects(client: TestClient) -> None:
     token = {"Authorization": f"Bearer {first.json()['token']}"}
     activity = client.get("/api/auth/me/activity?type=account", headers=token).json()["items"]
     assert any(i["action"] == "email_changed_by_admin" for i in activity)
+
+
+async def test_patch_no_longer_changes_email(client: TestClient) -> None:
+    admin, user = await make_user(role="admin"), await make_user()
+    res = client.patch(
+        f"/api/admin/users/{user['id']}",
+        json={"email": "other@example.invalid", "username": "renamed"},
+        headers=admin["headers"],
+    )
+    assert res.status_code == 400 and "change-email" in res.json()["detail"]
+    stored = await current_db().users.find_one({"_id": user["_id"]})
+    assert stored["email"] == user["email"] and stored["username"] == user["username"]
+
+
+async def test_email_change_syncs_only_the_open_reset_request(client: TestClient) -> None:
+    admin, user, other = await make_user(role="admin"), await make_user(), await make_user()
+    now = datetime.now(UTC)
+    db = current_db()
+
+    def row(owner: dict[str, Any], status: str) -> dict[str, Any]:
+        return {"userId": owner["_id"], "email": owner["email"], "status": status, "createdAt": now}
+
+    await db.passwordresetrequests.insert_one(row(user, "done"))
+    await db.passwordresetrequests.insert_one(row(user, "open"))
+    await db.passwordresetrequests.insert_one(row(other, "open"))
+    new = f"synced-{user['id']}@example.invalid"
+    res = client.put(
+        f"/api/admin/users/{user['id']}/email", json={"email": new}, headers=admin["headers"]
+    )
+    assert res.status_code == 200
+    mine = {
+        r["status"]: r["email"]
+        async for r in db.passwordresetrequests.find({"userId": user["_id"]})
+    }
+    assert mine == {"open": new, "done": user["email"]}
+    theirs = await db.passwordresetrequests.find_one({"userId": other["_id"]})
+    assert theirs["email"] == other["email"]

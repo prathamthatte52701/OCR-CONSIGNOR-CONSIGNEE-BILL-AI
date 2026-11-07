@@ -52,7 +52,10 @@ export default function AdminMaintenancePage() {
 
   const load = useCallback(() => {
     setError("");
-    adminApi.system().then(setSystem).catch((err) => setError(err.userMessage || "Could not load."));
+    adminApi
+      .system()
+      .then(setSystem)
+      .catch((err) => setError(err.userMessage || "Could not load system health."));
     adminApi
       .maintenanceActivity()
       .then((d) => setFeed(d.items))
@@ -61,26 +64,41 @@ export default function AdminMaintenancePage() {
 
   useEffect(load, [load]);
 
-  if (error) return <p className="text-sm text-danger">{error}</p>;
-  if (!system) return <LoadingState message="Loading maintenance..." />;
-
   return (
     <div className="max-w-3xl space-y-8">
       <h1 className="text-xl font-semibold">Maintenance</h1>
 
       <section>
         <h2 className="text-sm font-semibold text-text-muted mb-3">Storage and health</h2>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <Stat label="Stored files" value={system.storage.files} />
-          <Stat label="Storage used" value={formatBytes(system.storage.bytes)} />
-          <Stat label="Documents processed" value={`${system.documentsProcessed} / ${system.documentsTotal}`} />
-          <Stat
-            label="Database"
-            value={system.db.ok ? `OK, ${system.db.pingMs} ms` : "Not responding"}
-          />
-          <Stat label="Server uptime" value={formatUptime(system.uptimeSeconds)} />
-          <Stat label="Orphaned files" value={system.orphanedFiles} />
-        </div>
+        {error ? (
+          <div role="alert" className="rounded border border-danger/40 bg-danger/10 px-3 py-3 text-sm text-danger">
+            <p className="mb-2">{error}</p>
+            <button
+              type="button"
+              onClick={load}
+              className="rounded border border-border px-3 py-1.5 text-xs font-medium text-text hover:border-accent/50"
+            >
+              Retry
+            </button>
+          </div>
+        ) : !system ? (
+          <LoadingState message="Loading health..." />
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <Stat label="Stored files" value={system.storage.files} />
+            <Stat label="Storage used" value={formatBytes(system.storage.bytes)} />
+            <Stat
+              label="Documents processed"
+              value={`${system.documentsProcessed} / ${system.documentsTotal}`}
+            />
+            <Stat
+              label="Database"
+              value={system.db.ok ? `OK, ${system.db.pingMs} ms` : "Not responding"}
+            />
+            <Stat label="Server uptime" value={formatUptime(system.uptimeSeconds)} />
+            <Stat label="Orphaned files" value={system.orphanedFiles} />
+          </div>
+        )}
         <div className="mt-3 flex gap-4 text-sm">
           <Link to="/orphaned-files" className="text-accent hover:underline">Orphaned files</Link>
           <Link to="/documents" className="text-accent hover:underline">Documents</Link>

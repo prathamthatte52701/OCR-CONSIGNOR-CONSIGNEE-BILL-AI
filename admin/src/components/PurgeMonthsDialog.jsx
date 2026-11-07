@@ -109,6 +109,7 @@ export default function PurgeMonthsDialog({ open, userId, label, confirmationPhr
               ? "Counting..."
               : `${preview.documents} document(s), about ${formatBytes(preview.bytes)} of files will be deleted.`}
           </p>
+          <p className="text-xs text-text-muted">Size is approximate (from stored file sizes).</p>
         </div>
 
         <div className="grid grid-cols-2 gap-3">

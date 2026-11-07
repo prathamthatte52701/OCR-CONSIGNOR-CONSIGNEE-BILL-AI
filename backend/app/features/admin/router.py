@@ -480,7 +480,6 @@ async def update_user(
 
     updates: dict[str, Any] = {}
     audit: dict[str, Any] = {"userId": user_id}
-    email_changed = False
     if body.username is not None:
         if not is_valid_username(body.username):
             raise HTTPException(
@@ -488,18 +487,7 @@ async def update_user(
             )
         updates["username"] = body.username
     if body.email is not None:
-        normalized_email = normalize_email(body.email)
-        if not is_valid_email(normalized_email):
-            raise HTTPException(status_code=400, detail="Invalid email address.")
-        if normalized_email != user["email"]:
-            taken = await db.users.find_one(
-                {"email": normalized_email, "_id": {"$ne": user["_id"]}}
-            )
-            if taken is not None:
-                raise HTTPException(status_code=400, detail="That email is already in use.")
-            updates["email"] = normalized_email
-            audit.update({"previousEmail": user["email"], "newEmail": normalized_email})
-            email_changed = True
+        raise HTTPException(status_code=400, detail="Use the change-email action.")
     if body.role is not None:
         if user["_id"] == current_user.id and body.role != "admin":
             raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")
@@ -509,15 +497,7 @@ async def update_user(
 
     if updates:
         updates["updatedAt"] = datetime.now(UTC)
-        update: dict[str, Any] = {"$set": updates}
-        if email_changed:
-            # The email is the login identity: bumping tokenVersion logs the user out
-            # everywhere, so no session keeps running under the old address.
-            update["$inc"] = {"tokenVersion": 1}
-        try:
-            await db.users.update_one({"_id": user["_id"]}, update)
-        except DuplicateKeyError:  # lost a race against another signup / edit
-            raise HTTPException(status_code=400, detail="That email is already in use.") from None
+        await db.users.update_one({"_id": user["_id"]}, {"$set": updates})
         audit["fields"] = [k for k in updates if k != "updatedAt"]
         await log_action(current_user.id, "user_updated", audit)
 
@@ -570,6 +550,10 @@ async def change_user_email(
         )
     except DuplicateKeyError:  # lost a race against another signup / edit
         raise HTTPException(status_code=400, detail="That email is already in use.") from None
+    # Keep the open password-reset request pointing at the new address (this user only).
+    await db.passwordresetrequests.update_one(
+        {"userId": user["_id"], "status": "open"}, {"$set": {"email": email}}
+    )
     # One row on the user (My Activity) and one on the admin; ids and addresses only.
     await log_action(
         user["_id"],
