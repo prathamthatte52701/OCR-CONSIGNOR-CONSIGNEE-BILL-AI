@@ -39,6 +39,7 @@ from app.features.auth.dependencies import (
     CurrentUser,
     require_admin,
 )
+from app.features.chat.files import delete_attachments as chat_delete_attachments
 from app.features.documents.correction_service import apply_field_correction
 from app.features.documents.file_purge import (
     DELETE_FAILED_MESSAGE,
@@ -588,9 +589,22 @@ async def delete_user(
     await db.documents.delete_many({"userId": target_id})
     await db.corrections.delete_many({"userId": target_id})
     await db.auditlogs.delete_many({"userId": target_id})
+    chat_files = await chat_delete_attachments(db, {"threadUserId": target_id})
+    await db.chatmessages.delete_many({"threadUserId": target_id})  # only this user's thread
     await db.users.delete_one({"_id": target_id})
+    await db.chatmessages.delete_many({"threadUserId": target_id})  # a message sent during delete
+    late = await chat_delete_attachments(db, {"threadUserId": target_id})
+    chat_files = {k: chat_files[k] + late[k] for k in chat_files}
 
-    await log_action(current_user.id, "user_deleted", {"userId": user_id})
+    await log_action(
+        current_user.id,
+        "user_deleted",
+        {
+            "userId": user_id,
+            "chatFilesDeleted": chat_files["files"],
+            "chatBytesFreed": chat_files["bytes"],
+        },
+    )
     return {"message": "User and all owned data deleted."}
 
 

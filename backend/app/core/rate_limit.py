@@ -1,11 +1,14 @@
 """Per-IP rate limiting (slowapi) plus a per-email limiter for login (needs async body read,
 which slowapi's key func can't do since it must stay sync)."""
 
+from fastapi import Request
 from limits import RateLimitItemPerHour, RateLimitItemPerMinute
 from limits.storage import MemoryStorage
 from limits.strategies import MovingWindowRateLimiter
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+
+from app.core.security import decode_token
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -13,6 +16,18 @@ limiter = Limiter(key_func=get_remote_address)
 UPLOAD_LIMIT = "120/hour"
 # Bulk uploads (up to 5 sets each), a separate budget from single uploads.
 BULK_UPLOAD_LIMIT = "30/hour"
+
+
+def user_or_ip_key(request: Request) -> str:
+    """Per-account key: decodes the JWT off the Authorization header (a slowapi key_func must
+    stay sync). Falls back to the IP for a missing/invalid token; the route auth 401s it anyway."""
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and token:
+        payload = decode_token(token.strip())
+        if payload and payload.get("userId"):
+            return f"user:{payload['userId']}"
+    return get_remote_address(request)
+
 
 _email_storage = MemoryStorage()
 _email_limiter = MovingWindowRateLimiter(_email_storage)

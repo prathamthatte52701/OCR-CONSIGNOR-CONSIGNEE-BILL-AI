@@ -29,6 +29,8 @@ from app.core.security_headers import SecurityHeadersMiddleware
 from app.core.upload_limit import BODY_TOO_BIG_DETAIL, UploadSizeLimitMiddleware
 from app.features.admin.router import router as admin_router
 from app.features.auth.router import router as auth_router
+from app.features.chat.files import PDF_MAX_BYTES, run_expiry_forever
+from app.features.chat.router import router as chat_router
 from app.features.documents.recovery import recover_interrupted_documents
 from app.features.documents.router import MAX_BULK_SETS, MAX_FILE_SIZE
 from app.features.documents.router import router as documents_router
@@ -55,9 +57,11 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         # while any interrupted documents are re-queued one by one behind the scenes.
         recovery_task = asyncio.create_task(_recover_in_background())
     app.state.recovery_task = recovery_task
+    app.state.chat_expiry_task = asyncio.create_task(run_expiry_forever())
     logger.info("Application startup complete (env={})", settings.environment)
     yield
     logger.info("Application shutdown")
+    app.state.chat_expiry_task.cancel()
     if recovery_task is not None and not recovery_task.done():
         recovery_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -80,13 +84,16 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # ty
 # Whole-request ceiling for the upload route (two files + multipart framing). Runs before the
 # body is parsed, so an oversized request is refused with 413 instead of being buffered first;
 # the per-file 5 MB rule and type checks still live in the route itself.
+CHAT_FILE_PATH = "/api/chat/messages/file"
 _MULTIPART_OVERHEAD = 1024 * 1024
 app.add_middleware(
     UploadSizeLimitMiddleware,
     limits={
         "/api/documents/upload": 2 * MAX_FILE_SIZE + _MULTIPART_OVERHEAD,
         "/api/documents/bulk-upload": MAX_BULK_SETS * 2 * MAX_FILE_SIZE + _MULTIPART_OVERHEAD,
+        CHAT_FILE_PATH: PDF_MAX_BYTES + _MULTIPART_OVERHEAD,
     },
+    details={CHAT_FILE_PATH: "This file is too large. Images can be up to 2 MB, PDFs up to 3 MB."},
 )
 # Every auth request is a few short strings; cap the whole body so nobody can make the server
 # buffer megabytes of JSON on /login or /signup before validation even starts.
@@ -154,3 +161,4 @@ async def health() -> dict[str, str]:
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
 app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
 app.include_router(documents_router, prefix="/api/documents", tags=["documents"])
+app.include_router(chat_router, prefix="/api/chat", tags=["chat"])

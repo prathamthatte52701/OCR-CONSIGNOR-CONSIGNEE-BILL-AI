@@ -314,20 +314,26 @@ def _run_pipeline(
 
                 rows.sort(key=sort_key, reverse=direction < 0)
         elif name == "$group":
-            # single group only (_id: None) with $sum accumulators - all /storage needs
-            if arg["_id"] is not None:
-                raise AttributeError("fake_mongo: $group supports only _id: None")
-            if rows:
-                rows = [
-                    {
-                        "_id": None,
-                        **{
-                            f: sum(_eval(a["$sum"], d, {}) for d in rows)
-                            for f, a in arg.items()
-                            if f != "_id"
-                        },
-                    }
-                ]
+            # _id: None or one expression (e.g. "$field"); accumulators $sum and $max
+            groups: dict[Any, list[dict[str, Any]]] = {}
+            for d in rows:
+                key = None if arg["_id"] is None else _eval(arg["_id"], d, {})
+                groups.setdefault(key, []).append(d)
+
+            def acc(a: dict[str, Any], members: list[dict[str, Any]]) -> Any:
+                ((op, expr),) = a.items()
+                vals = [_eval(expr, m, {}) for m in members]
+                if op == "$sum":
+                    return sum(vals)
+                if op == "$max":
+                    vals = [v for v in vals if v is not None]
+                    return max(vals) if vals else None
+                raise AttributeError(f"fake_mongo: unsupported accumulator {op}")
+
+            rows = [
+                {"_id": key, **{f: acc(a, ms) for f, a in arg.items() if f != "_id"}}
+                for key, ms in groups.items()
+            ]
         elif name == "$skip":
             rows = rows[arg:]
         elif name == "$limit":
@@ -399,6 +405,9 @@ class _SyncCursor:
     def limit(self, n: int) -> "_SyncCursor":
         self._limit = n
         return self
+
+    def to_list_sync(self) -> list[dict[str, Any]]:
+        return self._materialize()
 
     def _materialize(self) -> list[dict[str, Any]]:
         rows = list(self._docs)
@@ -502,9 +511,15 @@ class _SyncCollection:
         return self._update(filt, update, many=True, upsert=upsert)
 
     def find_one_and_update(
-        self, filt: dict[str, Any], update: dict[str, Any], upsert: bool = False, **_: Any
+        self,
+        filt: dict[str, Any],
+        update: dict[str, Any],
+        upsert: bool = False,
+        return_document: bool = False,
+        **_: Any,
     ) -> dict[str, Any] | None:
-        """Returns the document as it was BEFORE the update (pymongo default), or None."""
+        """Returns the document as it was BEFORE the update (pymongo default), or None; with
+        return_document=True (ReturnDocument.AFTER) the updated document."""
         before = self.find_one(filt)
         if before is None:
             if upsert:
@@ -512,6 +527,8 @@ class _SyncCollection:
             return None
         before = copy.deepcopy(before)
         self._update({"_id": before["_id"]}, update, many=False, upsert=False)
+        if return_document:
+            return self.find_one({"_id": before["_id"]})
         return before
 
     def delete_one(self, filt: dict[str, Any]) -> DeleteResult:
@@ -529,8 +546,14 @@ class _SyncCollection:
 
     # -- reads
     def find_one(
-        self, filt: dict[str, Any] | None = None, projection: dict[str, Any] | None = None
+        self,
+        filt: dict[str, Any] | None = None,
+        projection: dict[str, Any] | None = None,
+        sort: list[tuple[str, int]] | None = None,
     ) -> dict[str, Any] | None:
+        if sort:
+            rows = self.find(filt, projection).sort(sort).limit(1).to_list_sync()
+            return rows[0] if rows else None
         for d in self._docs:
             if _matches(d, filt or {}):
                 return _project(d, projection)
@@ -751,15 +774,40 @@ class _DownloadStream:
         return self._data
 
 
+class _UploadStream:
+    def __init__(self, bucket: "FakeGridFSBucket", filename: str, metadata: Any) -> None:
+        self._bucket, self._filename, self._metadata = bucket, filename, metadata
+        self._id = ObjectId()
+        self._buf = b""
+
+    async def write(self, data: bytes) -> None:
+        self._buf += bytes(data)
+
+    async def close(self) -> None:
+        await self._bucket.upload_from_stream_with_id(
+            self._id, self._filename, self._buf, self._metadata
+        )
+
+    async def abort(self) -> None:
+        self._buf = b""
+
+
 class FakeGridFSBucket:
     """Stands in for motor.motor_asyncio.AsyncIOMotorGridFSBucket."""
 
-    def __init__(self, db: _Database) -> None:
+    def __init__(self, db: _Database, bucket_name: str = "fs", **_: Any) -> None:
         self._db_name = db.name
+        self._bucket = bucket_name
 
     @property
     def _files(self) -> dict[ObjectId, tuple[str, bytes, dict[str, Any]]]:
-        return STORE.files.setdefault(self._db_name, {})
+        key = self._db_name if self._bucket == "fs" else f"{self._db_name}/{self._bucket}"
+        return STORE.files.setdefault(key, {})
+
+    def open_upload_stream(
+        self, filename: str, metadata: dict[str, Any] | None = None, **_: Any
+    ) -> "_UploadStream":
+        return _UploadStream(self, filename, metadata)
 
     async def upload_from_stream(
         self, filename: str, source: bytes, metadata: dict[str, Any] | None = None, **_: Any
@@ -778,7 +826,7 @@ class FakeGridFSBucket:
     ) -> None:
         self._files[file_id] = (filename, bytes(source), dict(metadata or {}))
         # Mirror GridFS's own bookkeeping collection so tests can count stored files.
-        STORE.docs(self._db_name, "fs.files").append(
+        STORE.docs(self._db_name, f"{self._bucket}.files").append(
             {"_id": file_id, "filename": filename, "length": len(source)}
         )
 
@@ -791,5 +839,5 @@ class FakeGridFSBucket:
         if file_id not in self._files:
             raise NoFile(f"no file in gridfs for id {file_id}")
         del self._files[file_id]
-        files_meta = STORE.docs(self._db_name, "fs.files")
+        files_meta = STORE.docs(self._db_name, f"{self._bucket}.files")
         files_meta[:] = [m for m in files_meta if m["_id"] != file_id]
