@@ -62,11 +62,17 @@ class CurrentUser:
     email: str
     role: str
     token_version: int
+    must_change_password: bool = False
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> CurrentUser:
+# Sent with a 403 to a user holding an admin-set temporary password (ACKN's shape).
+PASSWORD_CHANGE_REQUIRED = {
+    "code": "PASSWORD_CHANGE_REQUIRED",
+    "message": "You must set a new password before continuing.",
+}
+
+
+async def _authenticate(credentials: HTTPAuthorizationCredentials | None) -> CurrentUser:
     if credentials is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -100,7 +106,28 @@ async def get_current_user(
         email=user["email"],
         role=user.get("role", "user"),
         token_version=user.get("tokenVersion", 0),
+        must_change_password=user.get("mustChangePassword") is True,
     )
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> CurrentUser:
+    """Every protected route. Also the single enforcement point of the forced password change:
+    a user holding an admin-set temporary password gets 403 PASSWORD_CHANGE_REQUIRED everywhere
+    (require_admin included) except the two routes using the variant below."""
+    user = await _authenticate(credentials)
+    if user.must_change_password:
+        raise HTTPException(status_code=403, detail=PASSWORD_CHANGE_REQUIRED)
+    return user
+
+
+async def get_current_user_allow_password_change(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> CurrentUser:
+    """Same checks, but lets a flagged user through. ONLY GET /auth/me and
+    POST /auth/change-password may depend on this."""
+    return await _authenticate(credentials)
 
 
 async def require_admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:

@@ -28,6 +28,12 @@ export const adminApi = {
   logs: (params) => client.get("/admin/logs", { params }).then((r) => r.data),
   telemetry: () => client.get("/admin/telemetry").then((r) => r.data),
 
+  passwordRequests: (params) => client.get("/admin/password-requests", { params }).then((r) => r.data),
+  setTempPassword: (id, password) =>
+    client.post(`/admin/password-requests/${id}/temp-password`, { password }).then((r) => r.data),
+  dismissPasswordRequest: (id) =>
+    client.post(`/admin/password-requests/${id}/dismiss`).then((r) => r.data),
+
   orphanedFiles: (params) => client.get("/admin/orphaned-files", { params }).then((r) => r.data),
   retryOrphanedFile: (id) => client.post(`/admin/orphaned-files/${id}/retry`).then((r) => r.data),
   dismissOrphanedFile: (id) => client.delete(`/admin/orphaned-files/${id}`).then((r) => r.data),
@@ -38,6 +44,4 @@ export const adminAuthApi = {
   me: () => client.get("/auth/me").then((r) => r.data),
   updateMe: (data) => client.patch("/auth/me", data).then((r) => r.data),
   changePassword: (data) => client.post("/auth/change-password", data).then((r) => r.data),
-  forgotPasswordVerify: (data) => client.post("/auth/forgot-password/verify", data).then((r) => r.data),
-  forgotPasswordReset: (data) => client.post("/auth/forgot-password/reset", data).then((r) => r.data),
 };

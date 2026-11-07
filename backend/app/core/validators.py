@@ -78,7 +78,7 @@ def password_problem(
     password: str, username: str | None = None, email: str | None = None
 ) -> str | None:
     """The first reason a NEW password is unacceptable (a user-facing message), else None.
-    Used for signup, change-password and forgot-password reset - never for login."""
+    Used for signup, change-password and the admin temporary password - never for login."""
     size = password_byte_length(password)
     if size is None or not MIN_PASSWORD_BYTES <= size <= MAX_PASSWORD_BYTES:
         return PASSWORD_LENGTH_ERROR

@@ -58,3 +58,8 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     await db.auditlogs.create_index([("userId", 1), ("createdAt", -1), ("_id", -1)])
     await db.auditlogs.create_index("action")
     await db.orphanedfiles.create_index("fileId", unique=True)
+    # One OPEN password-reset request per user (the atomic upsert relies on this).
+    await db.passwordresetrequests.create_index(
+        [("userId", 1)], unique=True, partialFilterExpression={"status": "open"}
+    )
+    await db.passwordresetrequests.create_index([("createdAt", -1)])

@@ -51,15 +51,10 @@ class ChangePasswordRequest(CamelModel):
     new_password: str = Field(max_length=MAX_PASSWORD_FIELD)
 
 
-class ForgotPasswordVerifyRequest(CamelModel):
-    username: str = Field(max_length=MAX_USERNAME_FIELD)
+class PasswordResetRequestBody(CamelModel):
     email: str = Field(max_length=MAX_EMAIL_FIELD)
-
-
-class ForgotPasswordResetRequest(CamelModel):
-    username: str = Field(max_length=MAX_USERNAME_FIELD)
-    email: str = Field(max_length=MAX_EMAIL_FIELD)
-    new_password: str = Field(max_length=MAX_PASSWORD_FIELD)
+    # A loose parse-time bound; sanitize_note() strips control characters and cuts to 200.
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class ActivityListResponse(CamelModel):

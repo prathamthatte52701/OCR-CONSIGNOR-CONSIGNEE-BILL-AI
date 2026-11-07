@@ -17,7 +17,7 @@ const CHIPS = [
 const ACTION_LABELS = {
   login: "Logged in",
   password_change: "Password changed",
-  password_reset: "Password reset",
+  password_reset_requested: "Password reset requested",
   document_uploaded: "Document uploaded",
   document_reprocessed: "Document reprocessed",
   document_deleted: "Document deleted",

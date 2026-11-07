@@ -30,12 +30,7 @@ AUTH_ROUTES: list[tuple[str, str, dict[str, Any]]] = [
         "/api/auth/change-password",
         {"currentPassword": STRONG, "newPassword": "Zq!9wXe#2Lp"},
     ),
-    ("POST", "/api/auth/forgot-password/verify", {"username": "abc", "email": OK_EMAIL}),
-    (
-        "POST",
-        "/api/auth/forgot-password/reset",
-        {"username": "abc", "email": OK_EMAIL, "newPassword": "Zq!9wXe#2Lp"},
-    ),
+    ("POST", "/api/auth/password-reset-request", {"email": OK_EMAIL}),
 ]
 
 # field -> first length that must be refused

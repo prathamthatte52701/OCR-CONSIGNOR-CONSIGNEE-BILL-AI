@@ -417,6 +417,10 @@ class _SyncCursor:
         return rows if length is None else rows[:length]
 
 
+# (db, collection, index name) -> partialFilterExpression of a unique index
+_PARTIAL: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+
 class _SyncCollection:
     def __init__(self, db_name: str, name: str) -> None:
         self._db_name = db_name
@@ -434,9 +438,12 @@ class _SyncCollection:
         for index_name, (keys, unique) in self._indexes.items():
             if not unique:
                 continue
+            partial = _PARTIAL.get((self._db_name, self.name, index_name))
+            if partial is not None and not _matches(candidate, partial):
+                continue  # a partial unique index only constrains documents matching its filter
             ident = tuple(_norm(_get_path(candidate, k)) for k, _ in keys)
             for other in self._docs:
-                if other is ignore:
+                if other is ignore or (partial is not None and not _matches(other, partial)):
                     continue
                 if tuple(_norm(_get_path(other, k)) for k, _ in keys) == ident:
                     raise DuplicateKeyError(
@@ -495,11 +502,13 @@ class _SyncCollection:
         return self._update(filt, update, many=True, upsert=upsert)
 
     def find_one_and_update(
-        self, filt: dict[str, Any], update: dict[str, Any], **_: Any
+        self, filt: dict[str, Any], update: dict[str, Any], upsert: bool = False, **_: Any
     ) -> dict[str, Any] | None:
         """Returns the document as it was BEFORE the update (pymongo default), or None."""
         before = self.find_one(filt)
         if before is None:
+            if upsert:
+                self._update(filt, update, many=False, upsert=True)
             return None
         before = copy.deepcopy(before)
         self._update({"_id": before["_id"]}, update, many=False, upsert=False)
@@ -543,9 +552,17 @@ class _SyncCollection:
         return _SyncCursor(rows, None)
 
     # -- indexes
-    def create_index(self, keys: Any, unique: bool = False, **_: Any) -> str:
+    def create_index(
+        self,
+        keys: Any,
+        unique: bool = False,
+        partialFilterExpression: dict[str, Any] | None = None,  # noqa: N803 - pymongo's name
+        **_: Any,
+    ) -> str:
         key_list = [(keys, 1)] if isinstance(keys, str) else [(k, int(v)) for k, v in keys]
         name = "_".join(f"{k}_{v}" for k, v in key_list)
+        if partialFilterExpression is not None:
+            _PARTIAL[(self._db_name, self.name, name)] = partialFilterExpression
         self._indexes[name] = (key_list, unique)
         return name
 

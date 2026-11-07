@@ -35,6 +35,10 @@ export const useAuthStore = create(
       role: null,
       // Not part of the persisted auth state (see partialize); mirrored in sessionStorage.
       ...readNotice(),
+      // True while an admin-set temporary password is in force (set by the API client on a
+      // PASSWORD_CHANGE_REQUIRED 403). In memory only: the server re-sends it on the first call.
+      mustChangePassword: false,
+      setMustChangePassword: (value) => set({ mustChangePassword: Boolean(value) }),
       setAuth: ({ token, username, email, role, justApproved, approvedAt }) => {
         writeNotice(Boolean(justApproved), approvedAt ?? null);
         set({
@@ -53,7 +57,15 @@ export const useAuthStore = create(
       updateProfile: ({ username, email, role }) => set({ username, email, role }),
       logout: () => {
         writeNotice(false, null);
-        set({ token: null, username: null, email: null, role: null, justApproved: false, approvedAt: null });
+        set({
+          token: null,
+          username: null,
+          email: null,
+          role: null,
+          justApproved: false,
+          approvedAt: null,
+          mustChangePassword: false,
+        });
       },
     }),
     {

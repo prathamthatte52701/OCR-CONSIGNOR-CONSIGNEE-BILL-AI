@@ -66,6 +66,12 @@ client.interceptors.response.use(
       window.location.href = "/login?notice=account";
     }
 
+    // Admin set a temporary password: stay logged in, but the app only allows the
+    // "Set a new password" page (RequireAuth redirects while the flag is set).
+    if (status === 403 && (detail === "PASSWORD_CHANGE_REQUIRED" || detail?.code === "PASSWORD_CHANGE_REQUIRED")) {
+      useAuthStore.getState().setMustChangePassword(true);
+    }
+
     error.userMessage = extractUserMessage(error);
     return Promise.reject(error);
   }

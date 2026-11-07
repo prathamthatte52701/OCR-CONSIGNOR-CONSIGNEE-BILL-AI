@@ -1,4 +1,4 @@
-"""T9 (API): the password rules apply to signup, change-password and forgot-password reset - and
+"""T9 (API): the password rules apply to signup, change-password - and
 ONLY to those (an existing weak password must still be able to log in)."""
 
 from collections.abc import Iterator
@@ -124,61 +124,6 @@ async def test_change_password_success_rotates_the_session(client: TestClient) -
         ).status_code
         == 200
     )
-
-
-@pytest.mark.parametrize(("password", "message"), BAD_NEW_PASSWORDS[:9])
-async def test_forgot_password_reset_enforces_the_same_rules(
-    client: TestClient, password: str, message: str
-) -> None:
-    user = await make_user(username="resetme")
-    r = client.post(
-        "/api/auth/forgot-password/reset",
-        json={"username": "resetme", "email": user["email"], "newPassword": password},
-    )
-    assert r.status_code == 400 and r.json()["detail"] == message
-    assert (
-        client.post(
-            "/api/auth/login", json={"email": user["email"], "password": PASSWORD}
-        ).status_code
-        == 200
-    )
-
-
-async def test_forgot_password_reset_rejects_password_built_from_the_username(
-    client: TestClient,
-) -> None:
-    user = await make_user(username="resetme")
-    r = client.post(
-        "/api/auth/forgot-password/reset",
-        json={"username": "resetme", "email": user["email"], "newPassword": "Xk#ResetMe9Z"},
-    )
-    assert r.status_code == 400 and r.json()["detail"] == PASSWORD_PERSONAL_ERROR
-
-
-async def test_forgot_password_reset_success_and_no_account_oracle(client: TestClient) -> None:
-    user = await make_user(username="resetme")
-    ok = client.post(
-        "/api/auth/forgot-password/reset",
-        json={"username": "resetme", "email": user["email"], "newPassword": STRONG},
-    )
-    assert ok.status_code == 200
-    assert (
-        client.post(
-            "/api/auth/login", json={"email": user["email"], "password": STRONG}
-        ).status_code
-        == 200
-    )
-    # A bad password is rejected with the SAME message whether or not the account exists
-    real = client.post(
-        "/api/auth/forgot-password/reset",
-        json={"username": "resetme", "email": user["email"], "newPassword": "Welcome@1"},
-    )
-    ghost = client.post(
-        "/api/auth/forgot-password/reset",
-        json={"username": "ghost", "email": "ghost@example.invalid", "newPassword": "Welcome@1"},
-    )
-    assert real.status_code == ghost.status_code == 400
-    assert real.json() == ghost.json() == {"detail": PASSWORD_COMMON_ERROR}
 
 
 @pytest.mark.parametrize(

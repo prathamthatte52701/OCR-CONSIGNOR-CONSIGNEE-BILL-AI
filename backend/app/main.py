@@ -99,8 +99,7 @@ app.add_middleware(
             "signup",
             "login",
             "change-password",
-            "forgot-password/verify",
-            "forgot-password/reset",
+            "password-reset-request",
             "me",
         )
     },

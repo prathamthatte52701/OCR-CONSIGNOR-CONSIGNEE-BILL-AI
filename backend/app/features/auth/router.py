@@ -1,4 +1,4 @@
-"""Auth routes: signup (no auto-login), login, profile, change-password, forgot-password."""
+"""Auth routes: signup (no auto-login), login, profile, change-password, password-reset request."""
 
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -10,7 +10,7 @@ from pymongo.errors import DuplicateKeyError
 from app.core.audit_log import log_action
 from app.core.database import get_database
 from app.core.object_id import is_valid_object_id
-from app.core.rate_limit import check_login_email_limit, limiter
+from app.core.rate_limit import check_login_email_limit, check_reset_email_limit, limiter
 from app.core.security import DUMMY_PASSWORD_HASH, hash_password, sign_token, verify_password
 from app.core.validators import (
     is_valid_email,
@@ -22,17 +22,23 @@ from app.features.auth.dependencies import (
     STATUS_PENDING,
     CurrentUser,
     get_current_user,
+    get_current_user_allow_password_change,
     iso_utc,
     raise_if_not_approved,
+)
+from app.features.auth.password_requests import (
+    GENERIC_RESET_MESSAGE,
+    can_request_reset,
+    handle_reset_request,
+    sanitize_note,
 )
 from app.features.auth.schemas import (
     ActivityListResponse,
     AuthResponse,
     ChangePasswordRequest,
-    ForgotPasswordResetRequest,
-    ForgotPasswordVerifyRequest,
     LoginRequest,
     MeResponse,
+    PasswordResetRequestBody,
     SignupRequest,
     UpdateMeRequest,
 )
@@ -114,6 +120,24 @@ async def login(request: Request, body: LoginRequest) -> AuthResponse:
     # shown to someone who doesn't own the account (no status oracle).
     raise_if_not_approved(user)
 
+    # Auto-close an open password-reset request: the user got in with their own password.
+    # Skipped while a temporary password is in force (that request is already done). One
+    # conditional update, so it is race-safe and a no-op when nothing is open.
+    if user.get("mustChangePassword") is not True:
+        now = datetime.now(UTC)
+        await db.passwordresetrequests.update_one(
+            {"userId": user["_id"], "status": "open"},
+            {
+                "$set": {
+                    "status": "done",
+                    "resolution": "user_logged_in",
+                    "resolvedAt": now,
+                    "resolvedBy": None,
+                    "updatedAt": now,
+                }
+            },
+        )
+
     # One-time "you were approved" notice: claimed atomically AFTER the password and the
     # approval gate, so only one concurrent login gets it and a failed login never uses it.
     claimed = await db.users.find_one_and_update(
@@ -133,7 +157,9 @@ async def login(request: Request, body: LoginRequest) -> AuthResponse:
 
 
 @router.get("/me", response_model=MeResponse)
-async def get_me(current_user: CurrentUser = Depends(get_current_user)) -> MeResponse:
+async def get_me(
+    current_user: CurrentUser = Depends(get_current_user_allow_password_change),
+) -> MeResponse:
     return MeResponse(
         id=str(current_user.id),
         username=current_user.username,
@@ -186,7 +212,7 @@ DOCUMENT_ACTIONS = [
     "document_corrected",
     "documents_download_all",
 ]
-ACCOUNT_ACTIONS = ["login", "password_change", "password_reset"]
+ACCOUNT_ACTIONS = ["login", "password_change", "password_reset_requested"]
 ACTIVITY_CONTEXT_KEYS = (
     "documentId",
     "field",
@@ -272,7 +298,7 @@ async def get_my_activity(
 async def change_password(
     request: Request,
     body: ChangePasswordRequest,
-    current_user: CurrentUser = Depends(get_current_user),
+    current_user: CurrentUser = Depends(get_current_user_allow_password_change),
 ) -> AuthResponse:
     _reject_bad_password(body.new_password, current_user.username, current_user.email)
 
@@ -281,19 +307,52 @@ async def change_password(
     stored_hash = user.get("passwordHash") if user else None
     if user is None or not stored_hash or not verify_password(body.current_password, stored_hash):
         raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    was_forced = user.get("mustChangePassword") is True
+    if was_forced and body.new_password == body.current_password:
+        raise HTTPException(
+            status_code=400, detail="New password must be different from the temporary one."
+        )
 
     new_token_version = user.get("tokenVersion", 0) + 1
-    await db.users.update_one(
-        {"_id": current_user.id},
+    update: dict[str, Any] = {
+        "$set": {
+            "passwordHash": hash_password(body.new_password),
+            "tokenVersion": new_token_version,
+            "updatedAt": datetime.now(UTC),
+        }
+    }
+    if was_forced:
+        update["$unset"] = {"mustChangePassword": ""}
+    # Conditional on the hash + tokenVersion verified above: if an admin set a temporary password
+    # in between, that write wins and this one is refused instead of overwriting it.
+    written = await db.users.update_one(
         {
-            "$set": {
-                "passwordHash": hash_password(body.new_password),
-                "tokenVersion": new_token_version,
-                "updatedAt": datetime.now(UTC),
-            }
+            "_id": current_user.id,
+            "passwordHash": stored_hash,
+            "tokenVersion": user.get("tokenVersion", 0),
         },
+        update,
     )
+    if written.matched_count == 0:
+        raise HTTPException(
+            status_code=409, detail="Your password was changed elsewhere. Please log in again."
+        )
     await log_action(current_user.id, "password_change", {})
+    if was_forced:
+        # A request filed between the temporary password and this change would stay open.
+        closed_at = datetime.now(UTC)
+        await db.passwordresetrequests.update_one(
+            {"userId": current_user.id, "status": "open"},
+            {
+                "$set": {
+                    "status": "done",
+                    "resolution": "user_logged_in",
+                    "resolvedAt": closed_at,
+                    "resolvedBy": None,
+                    "updatedAt": closed_at,
+                }
+            },
+        )
 
     # Re-issue a token for the current session so this tab stays logged in;
     # every other outstanding token dies because its tokenVersion no longer matches.
@@ -303,41 +362,20 @@ async def change_password(
     )
 
 
-@router.post("/forgot-password/verify")
-@limiter.limit("20/15minute")
-async def forgot_password_verify(
-    request: Request, body: ForgotPasswordVerifyRequest
-) -> dict[str, bool]:
-    db = get_database()
-    email = normalize_email(body.email)
-    user = await db.users.find_one({"username": body.username, "email": email})
-    if user is None:
-        raise HTTPException(status_code=400, detail="Username and email do not match any account.")
-    return {"verified": True}
-
-
-@router.post("/forgot-password/reset")
-@limiter.limit("20/15minute")
-async def forgot_password_reset(
-    request: Request, body: ForgotPasswordResetRequest
+@router.post("/password-reset-request")
+@limiter.limit("10/hour")
+async def password_reset_request(
+    request: Request, body: PasswordResetRequestBody
 ) -> dict[str, str]:
+    """Public. Always the same generic 200 (only the limits can answer 429, and the per-email
+    limit counts every email, existing or not); a request row is created only for an approved,
+    non-admin account with a password."""
     email = normalize_email(body.email)
-    _reject_bad_password(body.new_password, body.username, email)
-
+    if not check_reset_email_limit(email):
+        raise HTTPException(
+            status_code=429, detail="Too many requests for this address. Try again later."
+        )
     db = get_database()
-    user = await db.users.find_one({"username": body.username, "email": email})
-    if user is None:
-        raise HTTPException(status_code=400, detail="Username and email do not match any account.")
-
-    await db.users.update_one(
-        {"_id": user["_id"]},
-        {
-            "$set": {
-                "passwordHash": hash_password(body.new_password),
-                "tokenVersion": user.get("tokenVersion", 0) + 1,
-                "updatedAt": datetime.now(UTC),
-            }
-        },
-    )
-    await log_action(user["_id"], "password_reset", {})
-    return {"message": "Password reset. Please log in with your new password."}
+    user = await db.users.find_one({"email": email})
+    await handle_reset_request(db, user, sanitize_note(body.note), can_request_reset(user))
+    return {"message": GENERIC_RESET_MESSAGE}

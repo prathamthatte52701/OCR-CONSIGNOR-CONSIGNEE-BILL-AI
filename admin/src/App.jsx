@@ -3,7 +3,6 @@ import AdminLayout from "./components/AdminLayout";
 import RequireAdminAuth from "./components/RequireAdminAuth";
 import ServerDownBanner from "./components/ServerDownBanner";
 import AdminLoginPage from "./pages/AdminLoginPage";
-import AdminForgotPasswordPage from "./pages/AdminForgotPasswordPage";
 import AdminProfilePage from "./pages/AdminProfilePage";
 import AdminDashboardPage from "./pages/AdminDashboardPage";
 import AdminUsersPage from "./pages/AdminUsersPage";
@@ -12,6 +11,7 @@ import AdminDocumentsPage from "./pages/AdminDocumentsPage";
 import AdminDocumentDetailPage from "./pages/AdminDocumentDetailPage";
 import AdminLogsPage from "./pages/AdminLogsPage";
 import AdminOrphanedFilesPage from "./pages/AdminOrphanedFilesPage";
+import PasswordRequestsPage from "./pages/PasswordRequestsPage";
 
 export default function App() {
   return (
@@ -19,13 +19,13 @@ export default function App() {
       <ServerDownBanner />
       <Routes>
         <Route path="/login" element={<AdminLoginPage />} />
-        <Route path="/forgot-password" element={<AdminForgotPasswordPage />} />
 
         <Route element={<RequireAdminAuth />}>
           <Route element={<AdminLayout />}>
             <Route path="/dashboard" element={<AdminDashboardPage />} />
             <Route path="/users" element={<AdminUsersPage />} />
             <Route path="/users/:id" element={<AdminUserDetailPage />} />
+            <Route path="/password-requests" element={<PasswordRequestsPage />} />
             <Route path="/documents" element={<AdminDocumentsPage />} />
             <Route path="/documents/:id" element={<AdminDocumentDetailPage />} />
             <Route path="/logs" element={<AdminLogsPage />} />

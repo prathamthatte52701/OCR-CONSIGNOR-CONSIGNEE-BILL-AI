@@ -16,15 +16,16 @@ from pymongo.errors import DuplicateKeyError
 from app.core.audit_log import log_action
 from app.core.database import get_database
 from app.core.filenames import attachment_header
-from app.core.object_id import is_valid_object_id
+from app.core.object_id import PyObjectId, is_valid_object_id
 from app.core.orphaned_files import record_orphan
-from app.core.security import verify_password
-from app.core.validators import is_valid_email, is_valid_username, normalize_email
+from app.core.security import hash_password, verify_password
+from app.core.validators import is_valid_email, is_valid_username, normalize_email, password_problem
 from app.features.admin.schemas import (
     AdminNukeRequest,
     ListResponse,
     RejectRequest,
     TelemetryResponse,
+    TempPasswordRequest,
     UpdateUserRequest,
     UserListResponse,
 )
@@ -294,6 +295,156 @@ async def reject_user(
     plain text (trimmed; empty = none)."""
     reason = ((body.reason if body else None) or "").strip() or None
     return await _set_user_status(user_id, STATUS_REJECTED, current_user, reason)
+
+
+def _serialize_password_request(r: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(r["_id"]),
+        "userId": str(r["userId"]),
+        "username": r.get("username"),
+        "email": r.get("email"),
+        "note": r.get("note") or "",
+        "status": r["status"],
+        "createdAt": r.get("createdAt"),
+        "updatedAt": r.get("updatedAt"),
+        "resolvedAt": r.get("resolvedAt"),
+        "resolution": r.get("resolution"),
+    }
+
+
+@router.get("/password-requests")
+async def list_password_requests(
+    status: Literal["open", "all"] = Query(default="open"),
+    current_user: CurrentUser = Depends(require_admin),
+) -> dict[str, Any]:
+    db = get_database()
+    query = {"status": "open"} if status == "open" else {}
+    rows = await db.passwordresetrequests.find(query).sort("createdAt", -1).limit(500).to_list(500)
+    rows.sort(key=lambda r: r["status"] != "open")  # stable: open first, newest first inside
+    open_count = await db.passwordresetrequests.count_documents({"status": "open"})
+    return {"requests": [_serialize_password_request(r) for r in rows], "openCount": open_count}
+
+
+async def _open_request_or_error(db: AsyncIOMotorDatabase, request_id: ObjectId) -> dict[str, Any]:
+    req = await db.passwordresetrequests.find_one({"_id": request_id})
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found.")
+    if req["status"] != "open":
+        raise HTTPException(status_code=409, detail="This request has already been handled.")
+    return req
+
+
+@router.post("/password-requests/{request_id}/temp-password")
+async def set_temp_password(
+    request_id: PyObjectId,
+    body: TempPasswordRequest,
+    current_user: CurrentUser = Depends(require_admin),
+) -> dict[str, bool]:
+    """The app sends no email: the admin tells the user the temporary password personally.
+    The user must choose a new one at the next login (mustChangePassword)."""
+    db = get_database()
+    req = await _open_request_or_error(db, request_id)
+    user = await db.users.find_one({"_id": req["userId"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    _guard_other_admin(user, current_user)
+    if user.get("role") == "admin" or user.get("status", STATUS_APPROVED) != STATUS_APPROVED:
+        raise HTTPException(
+            status_code=403, detail="A temporary password can only be set for an approved user."
+        )
+    if (
+        problem := password_problem(body.password, user.get("username"), user.get("email"))
+    ) is not None:
+        raise HTTPException(status_code=422, detail=problem)
+
+    new_hash = hash_password(body.password)  # slow: before claiming anything
+    now = datetime.now(UTC)
+    # 1) claim the request atomically (a second admin loses with 409)
+    claimed = await db.passwordresetrequests.find_one_and_update(
+        {"_id": request_id, "status": "open"},
+        {
+            "$set": {
+                "status": "done",
+                "resolution": "temp_password",
+                "resolvedAt": now,
+                "resolvedBy": current_user.id,
+                "updatedAt": now,
+            }
+        },
+    )
+    if claimed is None:
+        raise HTTPException(status_code=409, detail="This request has already been handled.")
+
+    async def roll_back() -> None:
+        try:
+            await db.passwordresetrequests.update_one(
+                {"_id": request_id, "status": "done", "resolvedAt": now},
+                {
+                    "$set": {
+                        "status": "open",
+                        "resolution": None,
+                        "resolvedAt": None,
+                        "resolvedBy": None,
+                    }
+                },
+            )
+        except DuplicateKeyError:
+            pass  # the user filed a fresh open request meanwhile; that one is the live request
+
+    # 2) update the user, only if still an approved non-admin
+    try:
+        result = await db.users.update_one(
+            {"_id": req["userId"], "role": {"$ne": "admin"}, **_status_query(STATUS_APPROVED)},
+            {
+                "$set": {"passwordHash": new_hash, "mustChangePassword": True, "updatedAt": now},
+                "$inc": {"tokenVersion": 1},
+            },
+        )
+    except Exception:
+        await roll_back()
+        raise
+    # 3) nothing matched: undo the claim
+    if result.matched_count == 0:
+        await roll_back()
+        raise HTTPException(
+            status_code=403, detail="A temporary password can only be set for an approved user."
+        )
+    # 4) audit (ids only, never the password)
+    await log_action(
+        current_user.id,
+        "password_reset_temp_set",
+        {"targetUserId": str(req["userId"]), "requestId": str(request_id)},
+    )
+    return {"ok": True}
+
+
+@router.post("/password-requests/{request_id}/dismiss")
+async def dismiss_password_request(
+    request_id: PyObjectId, current_user: CurrentUser = Depends(require_admin)
+) -> dict[str, bool]:
+    db = get_database()
+    req = await _open_request_or_error(db, request_id)
+    now = datetime.now(UTC)
+    result = await db.passwordresetrequests.update_one(
+        {"_id": request_id, "status": "open"},
+        {
+            "$set": {
+                "status": "dismissed",
+                "resolution": "dismissed",
+                "resolvedAt": now,
+                "resolvedBy": current_user.id,
+                "updatedAt": now,
+            }
+        },
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=409, detail="This request has already been handled.")
+    await log_action(
+        current_user.id,
+        "password_reset_dismissed",
+        {"targetUserId": str(req["userId"]), "requestId": str(request_id)},
+    )
+    return {"ok": True}
 
 
 @router.get("/users/{user_id}")

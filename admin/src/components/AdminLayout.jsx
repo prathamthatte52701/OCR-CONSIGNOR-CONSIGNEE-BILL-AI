@@ -1,11 +1,14 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Users, FileStack, ScrollText, LogOut, ShieldAlert, FileWarning } from "lucide-react";
+import { useEffect, useState } from "react";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { LayoutDashboard, Users, FileStack, ScrollText, LogOut, ShieldAlert, FileWarning, KeyRound } from "lucide-react";
+import { adminApi } from "../api/admin";
 import { useAdminAuth } from "../context/AdminAuthContext";
 import { cn } from "../lib/utils";
 
 const NAV_ITEMS = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/users", label: "Users", icon: Users },
+  { to: "/password-requests", label: "Password requests", icon: KeyRound, badge: "openRequests" },
   { to: "/documents", label: "Documents", icon: FileStack },
   { to: "/logs", label: "Logs", icon: ScrollText },
   { to: "/orphaned-files", label: "Orphaned Files", icon: FileWarning },
@@ -14,6 +17,16 @@ const NAV_ITEMS = [
 export default function AdminLayout() {
   const { username, logout } = useAdminAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [counts, setCounts] = useState({ openRequests: 0 });
+
+  // Open password-request count for the nav badge: refreshed on every page change.
+  useEffect(() => {
+    adminApi
+      .passwordRequests({ status: "open" })
+      .then((data) => setCounts({ openRequests: data.openCount || 0 }))
+      .catch(() => {});
+  }, [location.pathname]);
 
   const handleLogout = () => {
     logout();
@@ -30,7 +43,7 @@ export default function AdminLayout() {
           </div>
 
           <nav className="flex items-center gap-1">
-            {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+            {NAV_ITEMS.map(({ to, label, icon: Icon, badge }) => (
               <NavLink
                 key={to}
                 to={to}
@@ -43,6 +56,11 @@ export default function AdminLayout() {
               >
                 <Icon size={15} />
                 <span className="hidden sm:inline">{label}</span>
+                {badge && counts[badge] > 0 && (
+                  <span className="rounded-full bg-warning text-bg text-[10px] font-semibold px-1.5">
+                    {counts[badge]}
+                  </span>
+                )}
               </NavLink>
             ))}
           </nav>
