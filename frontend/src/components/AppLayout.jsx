@@ -1,57 +1,70 @@
-import { NavLink, Outlet } from "react-router-dom";
-import { LayoutDashboard, Upload, FileStack, History, CircleHelp, LogOut, Menu, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef } from "react";
+import { Outlet, useLocation } from "react-router-dom";
+import { LogOut, PanelLeftClose, PanelLeftOpen, Menu } from "lucide-react";
 import { useAuthStore } from "../store/authStore";
 import { useLogout } from "../hooks/useAuth";
-import { cn } from "../lib/utils";
+import { useLayoutState } from "../hooks/useLayoutState";
+import AppSidebar from "./AppSidebar";
 import ApprovedWelcomeDialog from "./ApprovedWelcomeDialog";
-
-const NAV_ITEMS = [
-  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/upload", label: "Upload", icon: Upload },
-  { to: "/documents", label: "Documents", icon: FileStack },
-  { to: "/activity", label: "My Activity", icon: History },
-  { to: "/help", label: "Help", icon: CircleHelp },
-];
 
 export default function AppLayout() {
   const username = useAuthStore((s) => s.username);
   const logout = useLogout();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const { pathname } = useLocation();
+  const { sidebarHidden, toggleSidebar, drawerOpen, openDrawer, closeDrawer, isDesktop } =
+    useLayoutState();
+  const menuRef = useRef(null);
+  const drawerShown = !isDesktop && drawerOpen;
+  const railShown = isDesktop && !sidebarHidden;
+
+  // A route change closes the drawer.
+  useEffect(() => {
+    closeDrawer();
+  }, [pathname, closeDrawer]);
+
+  // Drawer open: Escape closes and the page behind does not scroll. The focus trap inside the
+  // drawer hands focus back to the menu button when the drawer unmounts.
+  useEffect(() => {
+    if (!drawerShown) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") closeDrawer();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = prev;
+    };
+  }, [drawerShown, closeDrawer]);
+
+  const ToggleIcon = isDesktop ? (railShown ? PanelLeftClose : PanelLeftOpen) : Menu;
+  const label = isDesktop ? (railShown ? "Hide sidebar" : "Show sidebar") : "Open menu";
 
   return (
     <div className="min-h-screen bg-bg text-text">
-      <header className="border-b border-border bg-surface">
-        <div className="mx-auto max-w-6xl flex items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2">
+      <header className="sticky top-0 z-50 h-14 border-b border-border bg-surface">
+        <div className="flex h-full items-center justify-between gap-2 px-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              ref={menuRef}
+              type="button"
+              onClick={isDesktop ? toggleSidebar : openDrawer}
+              aria-label={label}
+              title={label}
+              aria-expanded={isDesktop ? railShown : drawerShown}
+              aria-controls="app-sidebar"
+              className="rounded p-1.5 text-text-muted hover:bg-surface-raised hover:text-text"
+            >
+              <ToggleIcon size={18} aria-hidden="true" />
+            </button>
             <span className="h-2.5 w-2.5 rounded-full bg-accent" />
-            <span className="font-semibold tracking-tight">THE MAIN OCR</span>
+            <span className="truncate font-semibold tracking-tight">THE MAIN OCR</span>
           </div>
-
-          <nav className="hidden md:flex items-center gap-1">
-            {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-1.5 px-3 py-1.5 rounded text-sm",
-                    isActive
-                      ? "bg-accent/15 text-accent"
-                      : "text-text-muted hover:text-text hover:bg-surface-raised"
-                  )
-                }
-              >
-                <Icon size={15} />
-                {label}
-              </NavLink>
-            ))}
-          </nav>
-
-          <div className="hidden md:flex items-center gap-3">
-            <NavLink to="/profile" className="text-sm text-text-muted hover:text-text">
+          <div className="flex shrink-0 items-center gap-3">
+            <span className="hidden max-w-[10rem] truncate text-sm text-text-muted sm:inline">
               {username}
-            </NavLink>
+            </span>
             <button
               onClick={logout}
               className="flex items-center gap-1.5 text-sm text-text-muted hover:text-danger"
@@ -59,43 +72,17 @@ export default function AppLayout() {
               <LogOut size={15} /> Log out
             </button>
           </div>
-
-          <button className="md:hidden" onClick={() => setMenuOpen((v) => !v)} aria-label="Menu">
-            {menuOpen ? <X size={20} /> : <Menu size={20} />}
-          </button>
         </div>
-
-        {menuOpen && (
-          <nav className="md:hidden border-t border-border px-4 py-2 flex flex-col gap-1">
-            {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                onClick={() => setMenuOpen(false)}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-2 px-2 py-2 rounded text-sm",
-                    isActive ? "bg-accent/15 text-accent" : "text-text-muted"
-                  )
-                }
-              >
-                <Icon size={16} />
-                {label}
-              </NavLink>
-            ))}
-            <NavLink to="/profile" onClick={() => setMenuOpen(false)} className="px-2 py-2 text-sm text-text-muted">
-              Profile ({username})
-            </NavLink>
-            <button onClick={logout} className="flex items-center gap-2 px-2 py-2 text-sm text-danger text-left">
-              <LogOut size={16} /> Log out
-            </button>
-          </nav>
-        )}
       </header>
 
-      <main className="mx-auto max-w-6xl px-4 py-6">
-        <Outlet />
-      </main>
+      {railShown && <AppSidebar variant="rail" />}
+      {drawerShown && <AppSidebar variant="drawer" onClose={closeDrawer} />}
+
+      <div className={railShown ? "lg:pl-60" : ""}>
+        <main className="mx-auto max-w-6xl px-4 py-6">
+          <Outlet />
+        </main>
+      </div>
       <ApprovedWelcomeDialog />
     </div>
   );

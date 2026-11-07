@@ -1,4 +1,5 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams } from "react-router-dom";
+import BackButton from "../components/BackButton";
 import { toast } from "sonner";
 import {
   RefreshCw,
@@ -134,7 +135,6 @@ function PartViewer({ id, part, label, doc }) {
 }
 
 export function DocumentDetail({ id, embedded = false }) {
-  const navigate = useNavigate();
   const { data: doc, isLoading } = useDocument(id);
   const correctField = useCorrectField(id);
   const reprocess = useReprocessDocument(id);
@@ -212,12 +212,7 @@ export function DocumentDetail({ id, embedded = false }) {
       <div className="flex flex-wrap items-start justify-between gap-3 mb-6">
         <div>
           {!embedded && (
-            <button
-              onClick={() => navigate(-1)}
-              className="text-xs text-text-muted hover:text-accent mb-1"
-            >
-              &larr; Back
-            </button>
+            <BackButton fallback="/documents" className="mb-2" />
           )}
           <h1 className="text-xl font-semibold flex items-center gap-2">
             {doc.invoiceNo || "(no invoice no.)"}

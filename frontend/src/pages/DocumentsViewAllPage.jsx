@@ -1,5 +1,6 @@
 import { useEffect } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
+import BackButton from "../components/BackButton";
 import { useDocumentsList } from "../hooks/useDocumentsQueries";
 import LoadingState from "../components/LoadingState";
 import { formatIST } from "../lib/formatDate";
@@ -94,12 +95,7 @@ export default function DocumentsViewAllPage() {
             {query.isLoading ? "Loading..." : `${total} document${total !== 1 ? "s" : ""} · read-only`}
           </p>
         </div>
-        <Link
-          to={backLink}
-          className="rounded border border-border px-3 py-1.5 text-sm font-medium hover:border-accent/50"
-        >
-          Back to Documents
-        </Link>
+        <BackButton to={backLink} />
       </div>
 
       {filterDescription.length > 0 && (
