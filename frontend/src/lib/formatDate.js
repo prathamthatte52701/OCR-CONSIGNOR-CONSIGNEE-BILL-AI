@@ -27,3 +27,8 @@ export function isTodayIST(dateStr) {
   const b = new Intl.DateTimeFormat("en-CA", fmt).format(new Date());
   return a === b;
 }
+
+// Calendar day in IST as YYYY-MM-DD (groups chat messages under date separators).
+export function dayKeyIST(dateStr) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: IST_ZONE }).format(new Date(dateStr));
+}

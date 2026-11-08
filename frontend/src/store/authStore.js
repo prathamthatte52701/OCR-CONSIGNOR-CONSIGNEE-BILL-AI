@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { removeChatKeys } from "../utils/layoutStorage";
 
 // The one-time "you were approved" notice survives a reload (sessionStorage, not localStorage,
 // so it never outlives the tab) until OK is pressed. Every access is guarded.
@@ -57,6 +58,7 @@ export const useAuthStore = create(
       updateProfile: ({ username, email, role }) => set({ username, email, role }),
       logout: () => {
         writeNotice(false, null);
+        removeChatKeys(); // chat panel flag + remembered admin of this browser's last user
         set({
           token: null,
           username: null,
