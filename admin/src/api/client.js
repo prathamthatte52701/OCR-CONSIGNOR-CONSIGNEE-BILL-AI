@@ -1,4 +1,5 @@
 import axios from "axios";
+import { removeChatUserKeys } from "../utils/layoutStorage";
 
 const STORAGE_KEY = "main-ocr-admin-auth";
 
@@ -48,6 +49,7 @@ client.interceptors.response.use(
     const status = error.response?.status;
     if (status === 401 && !error.config?.url?.includes("/auth/")) {
       localStorage.removeItem(STORAGE_KEY);
+      removeChatUserKeys();
       window.location.href = "/login";
     }
 

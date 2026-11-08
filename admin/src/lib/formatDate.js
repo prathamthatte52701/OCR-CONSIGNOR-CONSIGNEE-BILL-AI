@@ -14,3 +14,8 @@ export function formatIST(dateStr, opts = {}) {
     ...opts,
   }).format(date);
 }
+
+// Calendar day in IST as YYYY-MM-DD (groups chat messages under date separators).
+export function dayKeyIST(dateStr) {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: IST_ZONE }).format(new Date(dateStr));
+}

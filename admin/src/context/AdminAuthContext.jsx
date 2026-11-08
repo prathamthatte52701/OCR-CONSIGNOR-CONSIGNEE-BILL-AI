@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect } from "react";
 import { adminAuthApi } from "../api/admin";
+import { removeChatUserKeys } from "../utils/layoutStorage";
 
 const AdminAuthContext = createContext(null);
 const STORAGE_KEY = "main-ocr-admin-auth";
@@ -24,6 +25,7 @@ export function AdminAuthProvider({ children }) {
   const logout = useCallback(() => {
     setAuthState({});
     localStorage.removeItem(STORAGE_KEY);
+    removeChatUserKeys(); // chat panel flag + remembered thread of this admin
   }, []);
 
   // Re-verify the persisted session against the server once on mount, so a

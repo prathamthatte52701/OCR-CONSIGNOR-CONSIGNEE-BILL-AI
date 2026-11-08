@@ -39,6 +39,7 @@ from app.features.auth.dependencies import (
     CurrentUser,
     require_admin,
 )
+from app.features.chat.files import count_files as chat_count_files
 from app.features.chat.files import delete_attachments as chat_delete_attachments
 from app.features.documents.correction_service import apply_field_correction
 from app.features.documents.file_purge import (
@@ -869,6 +870,8 @@ async def system_info(current_user: CurrentUser = Depends(require_admin)) -> dic
         "documentsProcessed": await db.documents.count_documents({"uploadStatus": "processed"}),
         "documentsTotal": await db.documents.count_documents({}),
         "orphanedFiles": await db.orphanedfiles.count_documents({}),
+        # the same figure the chat storage cap uses (non-expired attachments); counts only
+        "chat": await chat_count_files(db, {}),
     }
 
 
@@ -880,7 +883,11 @@ MAINTENANCE_ACTIONS = [
     "orphaned_file_retry_succeeded",
     "orphaned_file_retry_failed",
     "user_deleted",
+    "chat_cleared",
+    "chat_clear_blocked",
 ]
+# Chat rows show counts and the reason only: no text, no names, no user ids.
+CHAT_CONTEXT_KEYS = ("range", "deleted", "files", "bytes", "reason")
 MAINTENANCE_CONTEXT_KEYS = (
     "reason",
     "scope",
@@ -913,12 +920,19 @@ async def maintenance_activity(
     items = []
     for log in logs:
         ctx = log.get("context") if isinstance(log.get("context"), dict) else {}
+        if log["action"].startswith("chat_"):
+            shown = {k: ctx[k] for k in CHAT_CONTEXT_KEYS if k in ctx}
+            if "scope" in ctx:
+                shown["scope"] = "all" if ctx["scope"] == "all" else "user"
+            ctx = shown
         items.append(
             {
                 "id": str(log["_id"]),
                 "action": log["action"],
                 "by": names.get(log.get("userId")),
-                "context": {k: ctx[k] for k in MAINTENANCE_CONTEXT_KEYS if k in ctx},
+                "context": {
+                    k: ctx[k] for k in (*MAINTENANCE_CONTEXT_KEYS, *CHAT_CONTEXT_KEYS) if k in ctx
+                },
                 "createdAt": log.get("createdAt"),
             }
         )

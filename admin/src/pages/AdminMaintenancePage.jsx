@@ -4,8 +4,10 @@ import { toast } from "sonner";
 import { AlertTriangle } from "lucide-react";
 import { adminApi } from "../api/admin";
 import LoadingState from "../components/LoadingState";
+import GlobalChatDeleteDialog from "../components/chat/GlobalChatDeleteDialog";
 import PurgeMonthsDialog from "../components/PurgeMonthsDialog";
 import { formatBytes } from "../lib/formatBytes";
+import { filesPart } from "../utils/chatAdminCore";
 import { formatIST } from "../lib/formatDate";
 
 const ACTION_LABELS = {
@@ -16,10 +18,23 @@ const ACTION_LABELS = {
   orphaned_file_retry_succeeded: "Orphan retry ok",
   orphaned_file_retry_failed: "Orphan retry failed",
   user_deleted: "User deleted",
+  chat_cleared: "Chat cleared",
+  chat_clear_blocked: "Chat clear refused",
 };
+
+function describeChat(item) {
+  const c = item.context || {};
+  if (item.action === "chat_clear_blocked") return String(c.reason || "").replace(/_/g, " ");
+  const n = c.deleted ?? 0;
+  const where = c.scope === "all" ? "all chats" : "one user's chat";
+  return `${where}: ${n} ${n === 1 ? "message" : "messages"}${filesPart(c.files ?? 0)}${
+    c.bytes ? `, ${formatBytes(c.bytes)}` : ""
+  }`;
+}
 
 function describe(item) {
   const c = item.context || {};
+  if (item.action.startsWith("chat_")) return describeChat(item);
   if (item.action !== "admin_nuke_attempt") return "";
   const where = c.scope === "global" ? "all users" : "one user";
   const what = c.purge === "months" ? `older than ${c.months} months` : "range";
@@ -49,6 +64,8 @@ export default function AdminMaintenancePage() {
   const [feed, setFeed] = useState([]);
   const [error, setError] = useState("");
   const [purgeOpen, setPurgeOpen] = useState(false);
+  const [chatDeleteOpen, setChatDeleteOpen] = useState(false);
+  const [chatResult, setChatResult] = useState("");
 
   const load = useCallback(() => {
     setError("");
@@ -97,6 +114,10 @@ export default function AdminMaintenancePage() {
             />
             <Stat label="Server uptime" value={formatUptime(system.uptimeSeconds)} />
             <Stat label="Orphaned files" value={system.orphanedFiles} />
+            <Stat
+              label="Chat files"
+              value={`${system.chat?.files ?? 0}, ${formatBytes(system.chat?.bytes ?? 0)}`}
+            />
           </div>
         )}
         <div className="mt-3 flex gap-4 text-sm">
@@ -142,7 +163,36 @@ export default function AdminMaintenancePage() {
         >
           <AlertTriangle size={12} /> Purge old documents (all users)
         </button>
+        <div className="mt-4 border-t border-border pt-3">
+          <p className="text-xs text-text-muted mb-3">
+            Deletes the chat and all chat files between every user and every admin. Documents are
+            not touched.
+          </p>
+          <button
+            type="button"
+            onClick={() => setChatDeleteOpen(true)}
+            className="flex items-center gap-1 text-xs px-3 py-1.5 rounded border border-danger bg-danger/10 text-danger font-semibold hover:bg-danger/20"
+          >
+            <AlertTriangle size={12} /> Delete all chat messages
+          </button>
+          {chatResult && <p role="status" className="mt-2 text-sm text-accent">{chatResult}</p>}
+        </div>
       </section>
+
+      {chatDeleteOpen && (
+        <GlobalChatDeleteDialog
+          onClose={() => setChatDeleteOpen(false)}
+          onDeleted={({ messages, files, bytes }) => {
+            setChatDeleteOpen(false);
+            setChatResult(
+              `Deleted ${messages} chat ${messages === 1 ? "message" : "messages"}${filesPart(files)}${
+                bytes ? `, ${formatBytes(bytes)} freed` : ""
+              } across all users.`
+            );
+            load();
+          }}
+        />
+      )}
 
       <PurgeMonthsDialog
         open={purgeOpen}

@@ -15,6 +15,11 @@
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
+/* Docked chat panel width (>= 1280px). */
+:root {
+  --chat-w: clamp(320px, 25vw, 440px);
+}
+
 body {
   background-color: var(--color-bg);
   color: var(--color-text);
