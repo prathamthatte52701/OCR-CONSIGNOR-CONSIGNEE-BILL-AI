@@ -22,6 +22,13 @@ from app.core.object_id import PyObjectId, is_valid_object_id
 from app.core.orphaned_files import record_orphan
 from app.core.security import hash_password, verify_password
 from app.core.validators import is_valid_email, is_valid_username, normalize_email, password_problem
+from app.features.admin.dashboard import (
+    daily_counts,
+    gather_untyped,
+    recent_feed,
+    series_days,
+    trend,
+)
 from app.features.admin.schemas import (
     AdminNukeRequest,
     EmailChangeRequest,
@@ -1150,7 +1157,62 @@ async def telemetry(current_user: CurrentUser = Depends(require_admin)) -> Telem
     )
     last_7d = await db.auditlogs.count_documents({"createdAt": {"$gte": now - timedelta(days=7)}})
 
+    days = series_days()
+    pending = _status_query("pending")
+    failed_q = {"uploadStatus": "failed"}
+    (
+        uploads,
+        failures,
+        users_trend,
+        uploads_trend,
+        failures_trend,
+        processed_trend,
+        pending_count,
+        pending_rows,
+        orphaned,
+        open_requests,
+        feed,
+    ) = await gather_untyped(
+        daily_counts(db, "documents", "createdAt", days),
+        daily_counts(db, "documents", "createdAt", days, failed_q),
+        trend(db, "users", "createdAt"),
+        trend(db, "documents", "createdAt"),
+        trend(db, "documents", "createdAt", failed_q),
+        trend(db, "documents", "processedAt", {"uploadStatus": "processed"}),
+        db.users.count_documents(pending),
+        db.users.find(pending, {"username": 1, "email": 1, "createdAt": 1})
+        .sort("createdAt", 1)
+        .limit(5)
+        .to_list(5),
+        db.orphanedfiles.count_documents({}),
+        db.passwordresetrequests.count_documents({"status": "open"}),
+        recent_feed(db),
+    )
+
     return TelemetryResponse(
+        failed_documents=failed,
+        orphaned_files=orphaned,
+        password_requests={"count": open_requests},
+        series={"days": days, "uploads": uploads, "failures": failures},
+        trends={
+            "users": users_trend,
+            "uploads": uploads_trend,
+            "failures": failures_trend,
+        },
+        processed_documents={"total": processed, **processed_trend},
+        pending_users={
+            "count": pending_count,
+            "oldest": [
+                {
+                    "id": str(u["_id"]),
+                    "username": u["username"],
+                    "email": u["email"],
+                    "createdAt": u.get("createdAt"),
+                }
+                for u in pending_rows
+            ],
+        },
+        activity_feed=feed,
         total_users=total_users,
         total_documents=total_documents,
         documents_by_status=status_counts,

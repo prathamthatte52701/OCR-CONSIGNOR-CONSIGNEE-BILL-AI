@@ -67,3 +67,12 @@ class TelemetryResponse(CamelModel):
     ocr_failure_rate: float
     recent_activity_last_24_hours: int
     recent_activity_last_7_days: int
+    # Dashboard extras (Feature 17). Defaults keep older callers of this model working.
+    failed_documents: int = 0
+    orphaned_files: int = 0
+    password_requests: dict[str, int] = {}
+    series: dict[str, list[Any]] = {}
+    trends: dict[str, dict[str, int]] = {}
+    processed_documents: dict[str, int] = {}
+    pending_users: dict[str, Any] = {}
+    activity_feed: list[dict[str, Any]] = []
