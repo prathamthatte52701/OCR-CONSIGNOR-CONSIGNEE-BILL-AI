@@ -164,3 +164,27 @@ async def test_total_count_is_the_number_of_unique_ids(client: TestClient) -> No
     assert (h["X-Total-Count"], h["X-Included-Count"], h["X-Skipped-Count"]) == ("2", "1", "1")
     row = await current_db().auditlogs.find_one({"action": "documents_download_all"})
     assert row is not None and row["context"]["requested"] == 2
+
+
+# ------------------------------------------------------------------ implausible date
+
+
+async def test_date_correction_clears_or_keeps_the_warning(client: TestClient) -> None:
+    user = await make_user()
+    doc = await make_document(
+        user["_id"], hasReviewWarnings=True, challanDate="01/01/2099", **CLEAN
+    )
+
+    def correct(value: str) -> Any:
+        return client.patch(
+            f"/api/documents/{doc['id']}/correct",
+            json={"field": "challanDate", "value": value},
+            headers=user["headers"],
+        )
+
+    assert correct("02/02/2098").status_code == 200  # still implausible: kept
+    assert await flag(doc["_id"]) is True
+    assert correct("04/07/2026").status_code == 200  # plausible, nothing else wrong: cleared
+    assert await flag(doc["_id"]) is False
+    assert correct("05/05/2099").status_code == 200  # bad again: back on
+    assert await flag(doc["_id"]) is True

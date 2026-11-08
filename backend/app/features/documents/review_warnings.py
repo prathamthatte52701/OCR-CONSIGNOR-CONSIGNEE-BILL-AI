@@ -2,12 +2,18 @@
 an edit changes them at once. Only for finished (processed) documents."""
 
 import math
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from app.core.date_window import date_implausible
 from app.features.documents.processing import _format_money, _parse_money
 
 LINE_ITEMS_TOLERANCE = 0.01
 GRAND_TOTAL_TOLERANCE = 1.00  # rupee rounding is allowed
+IST = ZoneInfo("Asia/Kolkata")
+# Every date field stored on a document: (key, label shown in the warning).
+_DATE_FIELDS = (("challanDate", "Date"),)
 _TAXES = (("cgstAmount", "cgstRate"), ("sgstAmount", "sgstRate"), ("igstAmount", "igstRate"))
 
 
@@ -29,10 +35,24 @@ def _tax_amount(doc: dict[str, Any], amount_key: str, rate_key: str) -> float | 
     return None
 
 
-def review_warnings(doc: dict[str, Any]) -> list[dict[str, str]]:
+def review_warnings(doc: dict[str, Any], today: date | None = None) -> list[dict[str, str]]:
     if doc.get("uploadStatus") != "processed":
         return []
     warnings: list[dict[str, str]] = []
+    today = today or datetime.now(IST).date()
+
+    for key, label in _DATE_FIELDS:
+        value = doc.get(key)
+        if date_implausible(value, today):
+            warnings.append(
+                {
+                    "code": "date_implausible",
+                    "message": (
+                        f"{label} looks wrong ({str(value).strip()[:20]}) - please check it "
+                        "against the original."
+                    ),
+                }
+            )
 
     basic = _money(doc.get("totalBasicAmount"))
     line_items = doc.get("lineItems") or []

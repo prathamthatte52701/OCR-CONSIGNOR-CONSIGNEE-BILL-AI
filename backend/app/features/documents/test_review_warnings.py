@@ -204,3 +204,27 @@ async def test_document_without_issues_returns_an_empty_list(client: TestClient)
     d = await make_document(user["_id"])
     got = client.get(f"/api/documents/{d['id']}", headers=user["headers"]).json()
     assert got["reviewWarnings"] == []
+
+
+# ---------------------------------------------------------------- date plausibility
+from datetime import date  # noqa: E402
+
+TODAY = date(2026, 7, 10)
+
+
+def date_warnings(d: dict[str, Any]) -> list[dict[str, str]]:
+    return [w for w in review_warnings(d, today=TODAY) if w["code"] == "date_implausible"]
+
+
+def test_implausible_date_warns_with_short_message() -> None:
+    d = doc(challanDate="12/07/2031", consignee="SECRET CO", invoiceNo="M123")
+    (w,) = date_warnings(d)
+    assert w["message"] == "Date looks wrong (12/07/2031) - please check it against the original."
+    assert "SECRET" not in w["message"] and "M123" not in w["message"]
+
+
+def test_plausible_missing_or_unreadable_date_does_not_warn() -> None:
+    for value in ("10/07/2026", "11/07/2026", None, "", "garbage", "31/02/2026"):
+        assert date_warnings(doc(challanDate=value)) == []
+    assert date_warnings({"uploadStatus": "failed", "challanDate": "12/07/2031"}) == []
+    assert review_warnings({"uploadStatus": "processing", "challanDate": "01/01/2099"}) == []
