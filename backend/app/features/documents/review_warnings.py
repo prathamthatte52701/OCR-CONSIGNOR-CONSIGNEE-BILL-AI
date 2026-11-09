@@ -72,6 +72,20 @@ def description_warning_rows(line_items: list[Any]) -> list[int]:
     return bad
 
 
+def amount_warning_rows(line_items: list[Any]) -> list[int]:
+    """1-based positions where quantity x basic != amount (rows with a missing value skipped)."""
+    bad: list[int] = []
+    for pos, item in enumerate(line_items, 1):
+        if not isinstance(item, dict):
+            continue
+        qty, rate, amount = (_money(item.get(k)) for k in ("quantity", "basic", "amount"))
+        if qty is None or rate is None or amount is None:
+            continue
+        if abs(qty * rate - amount) > LINE_ITEMS_TOLERANCE:
+            bad.append(pos)
+    return bad
+
+
 def review_warnings(doc: dict[str, Any], today: date | None = None) -> list[dict[str, str]]:
     if doc.get("uploadStatus") != "processed":
         return []
@@ -129,6 +143,18 @@ def review_warnings(doc: dict[str, Any], today: date | None = None) -> list[dict
                 "message": (
                     f"Line item {_positions(bad_descriptions)}: description is empty or "
                     "unreadable - please check it against the original."
+                ),
+            }
+        )
+
+    bad_amounts = amount_warning_rows(line_items)
+    if bad_amounts:
+        warnings.append(
+            {
+                "code": "row_amounts",
+                "message": (
+                    f"Line item {_positions(bad_amounts)}: quantity x basic does not match "
+                    "amount - please check."
                 ),
             }
         )

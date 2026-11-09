@@ -279,3 +279,32 @@ def test_empty_short_or_symbol_description_warns(bad: Any) -> None:
 )
 def test_normal_noisy_description_does_not_warn(ok: str) -> None:
     assert codes(descs(ok)) == []
+
+
+# ---------------------------------------------------------------- quantity x basic = amount
+def rows(*triples: tuple[Any, Any, Any]) -> dict[str, Any]:
+    return doc(
+        lineItems=[
+            {"srNo": str(n), "description": "SECRET", "quantity": q, "basic": b, "amount": a}
+            for n, (q, b, a) in enumerate(triples, 1)
+        ]
+    )
+
+
+def test_matching_rows_and_comma_numbers_do_not_warn() -> None:
+    assert codes(rows(("2", "1,800.00", "3,600.00"), ("1", "10", "10.00"))) == []
+
+
+def test_mismatching_row_warns_with_position_only() -> None:
+    (w,) = review_warnings(rows(("1", "5", "5"), ("2", "1,800.00", "3,000.00")))
+    assert w["code"] == "row_amounts"
+    assert w["message"] == ("Line item 2: quantity x basic does not match amount - please check.")
+
+
+def test_rows_with_empty_or_non_numeric_values_are_skipped() -> None:
+    assert codes(rows(("", "5", "9"), ("2", "x", "9"), ("2", "5", None))) == []
+
+
+def test_amount_tolerance_edge() -> None:
+    assert codes(rows(("1", "10.00", "10.01"))) == []
+    assert codes(rows(("1", "10.00", "10.02"))) == ["row_amounts"]
