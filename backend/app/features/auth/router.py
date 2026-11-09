@@ -13,6 +13,7 @@ from app.core.object_id import is_valid_object_id
 from app.core.rate_limit import check_login_email_limit, check_reset_email_limit, limiter
 from app.core.security import DUMMY_PASSWORD_HASH, hash_password, sign_token, verify_password
 from app.core.validators import (
+    MAX_EMAIL_LENGTH,
     is_valid_email,
     is_valid_username,
     normalize_email,
@@ -103,6 +104,11 @@ async def signup(request: Request, body: SignupRequest) -> dict[str, str]:
 @limiter.limit("100/15minute")
 async def login(request: Request, body: LoginRequest) -> AuthResponse:
     email = normalize_email(body.email)
+    if len(email) > MAX_EMAIL_LENGTH:
+        # Can never match an account; same answer as a wrong password, and the limiter and
+        # database never see the over-long key.
+        verify_password(body.password, DUMMY_PASSWORD_HASH)
+        raise HTTPException(status_code=401, detail=GENERIC_LOGIN_ERROR)
 
     if not check_login_email_limit(email):
         raise HTTPException(status_code=429, detail="Too many login attempts. Try again later.")

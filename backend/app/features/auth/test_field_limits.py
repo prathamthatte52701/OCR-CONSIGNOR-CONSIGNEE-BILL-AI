@@ -63,6 +63,11 @@ async def test_field_over_its_maximum_is_422(
     user = await make_user()
     too_long = {**body, field: "x" * FIELD_LIMITS[field]}
     r = client.request(method, path, json=too_long, headers=_auth_headers(path, user))
+    if path.endswith("/login") and field == "email":
+        # Step C: an over-long login email gets the same generic failure as a wrong password
+        # (no 422, no hint); the 254-character cap is enforced in the handler.
+        assert r.status_code == 401 and r.json() == {"detail": "Invalid email or password."}
+        return
     assert r.status_code == 422, (path, field, r.status_code)
     assert "at most" in r.text
     # the rejected value (possibly a password) is never echoed back, nor pydantic's raw input

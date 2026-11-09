@@ -11,6 +11,7 @@ from app.core.base_model import CamelModel
 # these only stop absurdly large values from being parsed, hashed or stored.
 MAX_USERNAME_FIELD = 32
 MAX_EMAIL_FIELD = 254  # RFC 5321 limit for an address
+MAX_LOGIN_EMAIL_FIELD = 1000  # only bounds the request size; see LoginRequest
 MAX_PASSWORD_FIELD = 128
 
 
@@ -21,7 +22,9 @@ class SignupRequest(CamelModel):
 
 
 class LoginRequest(CamelModel):
-    email: str = Field(max_length=MAX_EMAIL_FIELD)
+    # Looser than MAX_EMAIL_FIELD on purpose: an over-long address must get the same generic
+    # login failure as a wrong one (the handler checks the real 254 limit), not a 422.
+    email: str = Field(max_length=MAX_LOGIN_EMAIL_FIELD)
     password: str = Field(max_length=MAX_PASSWORD_FIELD)
 
 

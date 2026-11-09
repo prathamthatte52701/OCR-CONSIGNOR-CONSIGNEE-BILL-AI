@@ -1,8 +1,8 @@
 """Config values as consignor really treats them. Settings come from explicit values only
 (`_env_file=None`); the real backend/.env is never read and no database is contacted.
 
-Not guarded by the app (so not asserted here, see the Feature 18 report): a BLANK MONGO_DB_NAME /
-FRONTEND_ORIGIN / ADMIN_ORIGIN falls back to the default, and values are whitespace-stripped."""
+A blank or whitespace-only MONGO_DB_NAME / FRONTEND_ORIGIN / ADMIN_ORIGIN means "use the
+default"; string values are whitespace-stripped; a blank MONGO_URI fails at startup."""
 
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,36 @@ def test_missing_optional_values_use_the_defaults() -> None:
     assert s.frontend_origin == "http://localhost:6001"
     assert s.admin_origin == "http://localhost:7000"
     assert s.port == 9000
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t", " \n "])
+def test_blank_db_name_and_origins_use_the_defaults(blank: str) -> None:
+    s = _settings(MONGO_DB_NAME=blank, FRONTEND_ORIGIN=blank, ADMIN_ORIGIN=blank)
+    assert s.mongo_db_name == "docintel_cons_cons"
+    assert s.cors_origins == ["http://localhost:6001", "http://localhost:7000"]
+
+
+def test_values_are_whitespace_stripped() -> None:
+    s = _settings(
+        MONGO_DB_NAME="  my_db  ",
+        FRONTEND_ORIGIN=" http://localhost:3000 ",
+        ADMIN_ORIGIN="\thttp://localhost:3001\n",
+        MONGO_URI="  " + URI + " ",
+    )
+    assert s.mongo_db_name == "my_db"
+    assert s.cors_origins == ["http://localhost:3000", "http://localhost:3001"]
+    assert s.mongo_uri == URI
+
+
+def test_trailing_slash_on_an_origin_is_left_alone() -> None:
+    assert _settings(FRONTEND_ORIGIN="http://localhost:3000/").frontend_origin.endswith("3000/")
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_blank_mongo_uri_fails_with_a_clear_message(blank: str) -> None:
+    with pytest.raises(ValidationError) as exc:
+        _settings(MONGO_URI=blank)
+    assert "MONGO_URI" in str(exc.value)
 
 
 def test_real_values_are_kept() -> None:

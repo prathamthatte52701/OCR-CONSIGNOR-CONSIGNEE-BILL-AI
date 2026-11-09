@@ -2,12 +2,12 @@
 
 import sys
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", str_strip_whitespace=True)
 
     mongo_uri: str = Field(alias="MONGO_URI")
     mongo_db_name: str = Field(default="docintel_cons_cons", alias="MONGO_DB_NAME")
@@ -38,6 +38,21 @@ class Settings(BaseSettings):
 
     # Cap on the STORED bytes of all chat attachments together (MB). Blank = 75.
     chat_files_max_total_mb: int = Field(default=75, alias="CHAT_FILES_MAX_TOTAL_MB")
+
+    @field_validator("mongo_db_name", "frontend_origin", "admin_origin", mode="before")
+    @classmethod
+    def _blank_means_default(cls, value: object, info: ValidationInfo) -> object:
+        """A blank / whitespace-only value is "not set": use the field's default."""
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return cls.model_fields[str(info.field_name)].default
+        return value
+
+    @field_validator("mongo_uri")
+    @classmethod
+    def _mongo_uri_required(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("MONGO_URI must not be blank")
+        return v
 
     @field_validator("chat_files_max_total_mb", mode="before")
     @classmethod

@@ -10,6 +10,7 @@ USERNAME_RE = re.compile(r"^.{3,8}$")
 # Character-class rule only - length is enforced separately, in bytes (see password_problem).
 PASSWORD_CLASSES_RE = re.compile(r"^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s]).+$")
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+MAX_EMAIL_LENGTH = 254  # RFC 5321 maximum
 
 # Digits and punctuation people tack onto the end of a common word ("Password1!", "qwerty@2024").
 _TRAILING_STRIP_CHARS = "0123456789" + r"""!@#$%^&*()-_=+[]{};:'",.<>/?\|`~"""
@@ -92,7 +93,7 @@ def password_problem(
 
 
 def is_valid_email(email: str) -> bool:
-    return bool(EMAIL_RE.match(email))
+    return len(email) <= MAX_EMAIL_LENGTH and bool(EMAIL_RE.match(email))
 
 
 def normalize_email(email: str) -> str:
