@@ -69,6 +69,7 @@ from app.features.documents.schemas import (
     DownloadAllRequest,
     StatsResponse,
     StorageResponse,
+    TrainingStatsResponse,
     UploadResponse,
 )
 from app.features.ocr.preprocessing import get_pdf_page_count
@@ -700,6 +701,19 @@ async def get_stats(current_user: CurrentUser = Depends(get_current_user)) -> St
         processing=processing,
         corrected=corrected,
     )
+
+
+@router.get("/training-stats", response_model=TrainingStatsResponse)
+async def get_training_stats(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> TrainingStatsResponse:
+    """The user's own counts only: trained = processed documents, corrected = documents the
+    user saved at least one correction on (the `edited` flag)."""
+    db = get_database()
+    base = {"userId": current_user.id, "isDeleted": {"$ne": True}}
+    trained = await db.documents.count_documents({**base, "uploadStatus": "processed"})
+    corrected = await db.documents.count_documents({**base, "edited": True})
+    return TrainingStatsResponse(trained_count=trained, corrected_count=corrected)
 
 
 @router.get("/storage", response_model=StorageResponse)

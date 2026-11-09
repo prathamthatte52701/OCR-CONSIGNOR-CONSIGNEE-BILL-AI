@@ -30,6 +30,13 @@ export function useDocumentStorage() {
   });
 }
 
+export function useTrainingStats() {
+  return useQuery({
+    queryKey: ["documents", "training-stats"],
+    queryFn: () => documentsApi.trainingStats(),
+  });
+}
+
 export function useDocument(id) {
   const query = useQuery({
     queryKey: ["document", id],

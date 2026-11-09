@@ -28,6 +28,7 @@ export const documentsApi = {
   },
   list: (params) => client.get("/documents", { params }).then((r) => r.data),
   stats: () => client.get("/documents/stats").then((r) => r.data),
+  trainingStats: () => client.get("/documents/training-stats").then((r) => r.data),
   storage: () => client.get("/documents/storage").then((r) => r.data),
   get: (id) => client.get(`/documents/${id}`).then((r) => r.data),
   correct: (id, field, value) =>

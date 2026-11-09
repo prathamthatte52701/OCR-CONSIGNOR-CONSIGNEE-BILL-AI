@@ -13,6 +13,7 @@ import {
 import {
   useDocumentsList,
   useDocumentStats,
+  useTrainingStats,
   useDocumentStorage,
 } from "../hooks/useDocumentsQueries";
 import LoadingState from "../components/LoadingState";
@@ -97,6 +98,7 @@ export default function Dashboard() {
     { refetchInterval: processing > 0 ? REFRESH_MS : false }
   );
   const storageQuery = useDocumentStorage();
+  const trainingQuery = useTrainingStats();
 
   // When processing goes from > 0 to 0, refresh the recent list once (a first load at 0 does not).
   const prevProcessing = useRef(null);
@@ -224,6 +226,20 @@ export default function Dashboard() {
           <Link to="/documents" className="text-xs text-accent mt-2 inline-block">
             Open documents
           </Link>
+        </div>
+        <div className={CARD}>
+          <h2 className="text-sm font-semibold text-text-muted mb-3">Training</h2>
+          {trainingQuery.isError ? (
+            <p className="text-xs text-text-muted">Training info unavailable.</p>
+          ) : (
+            <p className="text-sm">
+              Documents processed:{" "}
+              <span className="font-semibold">{trainingQuery.data?.trainedCount ?? "..."}</span>
+              <br />
+              Documents you corrected:{" "}
+              <span className="font-semibold">{trainingQuery.data?.correctedCount ?? "..."}</span>
+            </p>
+          )}
         </div>
       </div>
 

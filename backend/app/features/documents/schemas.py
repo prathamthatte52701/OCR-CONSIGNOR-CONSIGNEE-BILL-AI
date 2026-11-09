@@ -41,5 +41,10 @@ class StorageResponse(CamelModel):
     bytes: int
 
 
+class TrainingStatsResponse(CamelModel):
+    trained_count: int
+    corrected_count: int
+
+
 class DownloadAllRequest(CamelModel):
     document_ids: list[str] = Field(default_factory=list, max_length=500)
