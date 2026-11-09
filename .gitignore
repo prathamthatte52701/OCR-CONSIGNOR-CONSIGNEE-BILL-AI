@@ -14,3 +14,6 @@ build/
 # local test report (not for the repo)
 FULL_TEST_REPORT.md
 PART1_TEST_REPORT.md
+
+# local run state of start.bat / stop.bat
+.run/
