@@ -63,7 +63,7 @@ paddlepaddle==3.3.1
 paddlex==3.7.2
 pandas==3.0.3
 passlib==1.7.4
-pillow==12.3.0
+pillow==13.0.0
 premailer==3.10.0
 prettytable==3.18.0
 propcache==0.5.2
