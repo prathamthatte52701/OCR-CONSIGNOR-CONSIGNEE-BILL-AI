@@ -1,46 +1,103 @@
 # THE MAIN OCR
 
-Consignor/Consignee OCR system. FastAPI + Motor (async MongoDB) backend that OCRs uploaded
-documents (PaddleOCR / PP-StructureV3) and extracts structured fields via the Groq LLM. Two
-separate React/Vite frontends: `frontend/` (end-user app) and `admin/` (admin console).
+Consignor / Consignee document OCR. Upload a document as a pair of images (or PDFs), get the
+fields read, checked and ready to review, edit and download.
 
-See `CLAUDE.md` for full architecture notes (pipeline structure, security patterns, commands).
+- **Part 1** - consignee / consignor header (consignee code, name, GSTIN, PAN, invoice number, date ...).
+- **Part 2** - line items (serial no, description, HSN/SAC, basic, quantity, amount) and the tax summary.
 
-## Known Limitations
+Backend: FastAPI + Motor (async MongoDB). OCR: PaddleOCR (Part 1) and PP-StructureV3 tables
+(Part 2). Field extraction: Groq LLM. Frontends: two separate React/Vite apps, `frontend/` for
+users and `admin/` for the admin console.
 
-- **OCR throughput is single-process and sequential per upload.** Each upload's Part 1 + Part 2
-  pipeline runs as a FastAPI background task in the same process serving HTTP requests (no job
-  queue/worker pool). PP-StructureV3 table extraction in particular is CPU-heavy (up to 300s for
-  an image, 420s for a PDF, vs. 60s/180s for Part 1) and PaddleX threading is pinned to 6 threads
-  via `OMP_NUM_THREADS`/`PADDLE_PDX_CPU_NUM_THREADS` (`app/main.py`). Uploading several documents
-  back-to-back queues them behind whichever one is currently OCR-ing rather than running in
-  parallel — expect noticeably slower turnaround under concurrent uploads.
-- **Rate limiting is in-memory, not persistent.** Both the per-IP `slowapi` limiter and the
-  per-email login limiter (`app/core/rate_limit.py`) use `limits`' `MemoryStorage`. A backend
-  restart or redeploy silently resets everyone's rate-limit counters. This also means rate limits
-  only hold within a single process — the app is not set up to run multiple backend workers/
-  instances without moving this to a shared store (e.g. Redis). The one exception is the admin
-  nuke rate limit (Feature 1), which is Mongo-backed (`auditlogs` query) and does survive
-  restarts.
-- **Forgot-password has no email verification step.** `POST /auth/forgot-password/verify` and
-  `/reset` authorize a reset purely by a username+email match already on file (`auth/router.py`)
-  — no reset token, no email actually sent. Anyone who knows both a user's username and email can
-  reset that account's password. This is a deliberate design tradeoff already in place, not a
-  regression from this work, but worth knowing before treating it as a secure recovery flow.
-- **No deployment/production setup exists yet.** There's no Dockerfile, process manager config,
-  or multi-worker `uvicorn` invocation anywhere in the repo — the only documented way to run the
-  backend is `uvicorn app.main:app --reload`, a single-process dev server. Anything beyond local
-  development (containerization, horizontal scaling, a real job queue for OCR) is unbuilt.
-- **Download All (bulk ZIP) only covers the current page.** It intentionally does not walk every
-  page of a filtered result set — downloading everything requires paging through and running it
-  per page.
-- **Confidence-based card coloring only applies to documents processed after this feature
-  shipped.** `minConfidence` is computed once, at pipeline-completion time, and stored on the
-  document; documents processed before this change won't have the field and fall back to the
-  neutral/no-data border until reprocessed.
-- **GridFS orphaned-file tracking is best-effort and requires manual admin action.** A failed
-  file delete is recorded (`orphanedfiles` collection) but nothing retries it automatically — an
-  admin has to visit the Orphaned Files page and retry or dismiss each one.
-- **Groq LLM extraction is an external dependency with no fallback.** If Groq is unreachable or
-  rate-limits the app, the affected document's pipeline run fails outright (`uploadStatus:
-  "failed"`) rather than degrading to a partial/manual-entry mode.
+`CLAUDE.md` holds the detailed architecture and rules.
+
+## Features
+
+**Users**
+- Sign up, wait for admin approval, log in, forgot / change password.
+- Upload one document pair or a bulk set (up to 5 pairs at once); 5 MB per file; JPG, PNG or PDF.
+- Live processing status, automatic restart recovery for interrupted jobs, reprocess.
+- Review page: every field with its confidence, inline correction, side-by-side original image.
+- Review warnings computed from the data: implausible date, line items vs Total Basic Amount,
+  Total Basic Amount + taxes vs Total Amount, multi-page note, line item serial numbers,
+  empty or junk descriptions, quantity x basic vs amount.
+- Document list with search, month / date / IST range filters, status and needs-review filters,
+  server-side sorting, paging, confidence-coloured cards.
+- Download one document or Download All as a ZIP; delete a document or only its files.
+- Dashboard with stats and storage use; My Activity log.
+- Chat with the admins, with file attachments.
+
+**Admins**
+- Dashboard: 14-day upload / failure series, 7-day trends, pending approvals, grouped activity feed.
+- Users: approve, reject, revoke, force logout, delete, password-reset requests.
+- Documents across all users (every cross-user access is audited), purge files, orphaned file retry.
+- Maintenance tools (bulk delete with rate limit and audit), audit log.
+- Chat inbox for user messages.
+
+## Project layout
+
+```
+backend/    FastAPI app (app/core, app/features/{auth,admin,documents,ocr,chat}), tests next to code
+frontend/   user app (Vite + React, React Query, Zustand)
+admin/      admin app (Vite + React)
+```
+
+## Run locally
+
+Requirements: Python 3.12, Node 20+, a MongoDB instance, Groq API key(s).
+
+```bash
+# backend (from the repo root)
+python -m venv venv
+venv/Scripts/pip install -r requirements.txt -r requirements-dev.txt   # Linux/macOS: venv/bin/pip
+cd backend
+cp .env.example .env      # or create .env, see the variables below
+uvicorn app.main:app --reload --port 9000
+
+# first admin (reads ADMIN_* variables from .env)
+python -m app.scripts.seed_admin
+
+# user app, http://localhost:6001
+cd frontend && npm install && npm run dev
+
+# admin app, http://localhost:7000
+cd admin && npm install && npm run dev
+```
+
+### Environment variables (`backend/.env`)
+
+| Variable | Purpose |
+|---|---|
+| `MONGO_URI`, `MONGO_DB_NAME` | database connection and name (default `docintel_cons_cons`) |
+| `GROQ_API_KEYS`, `GROQ_MODEL` | Groq keys (comma separated) and model |
+| `JWT_SECRET` | token signing secret |
+| `PORT` | backend port (default 9000) |
+| `FRONTEND_ORIGIN`, `ADMIN_ORIGIN` | allowed CORS origins |
+| `ADMIN_1_EMAIL`, `ADMIN_1_USERNAME`, `ADMIN_1_PASSWORD` | first admin for `seed_admin` |
+| `ENABLE_DOCS` | `true` exposes `/docs` |
+| `RECOVER_INTERRUPTED_UPLOADS` | re-queue documents stuck in processing at startup |
+| `CHAT_FILES_MAX_TOTAL_MB` | chat attachment storage cap (default 75) |
+
+Never commit `.env`.
+
+## Development
+
+From `backend/` with the repo `venv`:
+
+```bash
+pytest                      # tests never touch a real database (in-process fake Mongo, *_test DB guard)
+pytest path/to/test_file.py # one file
+ruff check . && black . && isort . && mypy .
+```
+
+From `frontend/` or `admin/`: `npm run dev`, `npm run lint`, `npm run build`.
+Small pure-logic tests run with `node --test src/**/*.test.js`.
+
+## Security in brief
+
+- JWT (HS256, 7 days) re-validated against the database on every request; admin approval gate.
+- Passwords: 8-64 bytes, mixed case, digit and symbol, common passwords rejected.
+- Rate limits on auth routes, upload size limits, sanitised filenames, security headers.
+- Every user query is scoped to the owner; another user's document is a 404.
+- Admin access to user documents and files is audited before data is returned.
