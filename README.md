@@ -20,12 +20,13 @@ users and `admin/` for the admin console.
 - Live processing status, automatic restart recovery for interrupted jobs, reprocess.
 - Review page: every field with its confidence, inline correction, side-by-side original image.
 - Review warnings computed from the data: implausible date, line items vs Total Basic Amount,
-  Total Basic Amount + taxes vs Total Amount, multi-page note, line item serial numbers,
-  empty or junk descriptions, quantity x basic vs amount.
+  Total Basic Amount + taxes vs Total Amount, multi-page note, line item serial numbers (the odd
+  row is pointed out), empty or junk descriptions, quantity x basic vs amount.
 - Document list with search, month / date / IST range filters, status and needs-review filters,
   server-side sorting, paging, confidence-coloured cards.
 - Download one document or Download All as a ZIP; delete a document or only its files.
-- Dashboard with stats and storage use; My Activity log.
+- Dashboard with stats, storage use and a training card (documents processed / corrected by you);
+  My Activity log.
 - Chat with the admins, with file attachments.
 
 **Admins**
@@ -106,12 +107,21 @@ ruff check . && black . && isort . && mypy .
 ```
 
 From `frontend/` or `admin/`: `npm run dev`, `npm run lint`, `npm run build`.
-Small pure-logic tests run with `node --test src/**/*.test.js`.
+Small pure-logic tests run with `node --test $(find src -name "*.test.js")`.
+
+Set `CHECK_INSTALLED_PINS=1` to also compare the installed packages with `requirements.txt`.
+
+### CI
+
+`.github/workflows/ci.yml` runs on every push and pull request to `main`: backend lint (ruff,
+black), backend tests (full pins installed, fake Mongo, fake secrets), and lint + build + node
+tests for `frontend/` and `admin/`.
 
 ## Security in brief
 
 - JWT (HS256, 7 days) re-validated against the database on every request; admin approval gate.
-- Passwords: 8-64 bytes, mixed case, digit and symbol, common passwords rejected.
+- Passwords: 8-64 bytes, mixed case, digit and symbol, common passwords rejected; emails are
+  capped at 254 characters everywhere.
 - Rate limits on auth routes, upload size limits, sanitised filenames, security headers.
 - Every user query is scoped to the owner; another user's document is a 404.
 - Admin access to user documents and files is audited before data is returned.
