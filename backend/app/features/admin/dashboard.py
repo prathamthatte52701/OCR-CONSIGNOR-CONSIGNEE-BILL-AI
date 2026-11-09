@@ -31,19 +31,50 @@ def _day_start_utc(day: str) -> datetime:
     return datetime.fromisoformat(day).replace(tzinfo=IST).astimezone(UTC)
 
 
-async def daily_counts(
-    db: Any, collection: str, field: str, days: list[str], extra: dict[str, Any] | None = None
-) -> list[int]:
-    """Per-IST-day counts for the given days; a day with nothing is 0."""
-    coll = db[collection]
+def _utc(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
-    def count(day: str) -> Any:
-        start = _day_start_utc(day)
-        return coll.count_documents(
-            {**(extra or {}), field: {"$gte": start, "$lt": start + timedelta(days=1)}}
-        )
 
-    return list(await asyncio.gather(*(count(d) for d in days)))
+def _window(times: list[datetime], week: datetime, two_weeks: datetime) -> dict[str, int]:
+    return {
+        "current": sum(t >= week for t in times),
+        "previous": sum(two_weeks <= t < week for t in times),
+    }
+
+
+async def document_telemetry(
+    db: Any, days: list[str], now: datetime | None = None
+) -> dict[str, Any]:
+    """Daily upload/failure series and the three document trends from ONE query (createdAt,
+    status and processedAt of the last 14 days), bucketed by IST day in code."""
+    now = now or datetime.now(UTC)
+    week, two_weeks = now - timedelta(days=7), now - timedelta(days=14)
+    cutoff = min(two_weeks, _day_start_utc(days[0]))
+    rows = await db.documents.find(
+        {"$or": [{"createdAt": {"$gte": cutoff}}, {"processedAt": {"$gte": cutoff}}]},
+        {"createdAt": 1, "uploadStatus": 1, "processedAt": 1},
+    ).to_list(None)
+    created: list[tuple[datetime, Any]] = []
+    for r in rows:
+        if (t := _utc(r.get("createdAt"))) is not None:
+            created.append((t, r.get("uploadStatus")))
+    index = {d: i for i, d in enumerate(days)}
+    uploads, failures = [0] * len(days), [0] * len(days)
+    for t, status in created:
+        i = index.get(t.astimezone(IST).date().isoformat())
+        if i is not None:
+            uploads[i] += 1
+            failures[i] += status == "failed"
+    processed = [_utc(r.get("processedAt")) for r in rows if r.get("uploadStatus") == "processed"]
+    return {
+        "uploads": uploads,
+        "failures": failures,
+        "uploads_trend": _window([t for t, _ in created], week, two_weeks),
+        "failures_trend": _window([t for t, st in created if st == "failed"], week, two_weeks),
+        "processed_trend": _window([t for t in processed if t is not None], week, two_weeks),
+    }
 
 
 async def trend(

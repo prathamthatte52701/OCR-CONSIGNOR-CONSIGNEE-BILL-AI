@@ -59,6 +59,8 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     except OperationFailure:
         pass  # index never existed on this database - nothing to drop
     await db.documents.create_index([("userId", 1), ("createdAt", -1)])
+    await db.documents.create_index("createdAt")
+    await db.documents.create_index("processedAt")
     await db.documents.create_index([("userId", 1), ("invoiceNo", 1)])
     await db.documents.create_index([("userId", 1), ("consigneeCode", 1)])
     await db.corrections.create_index("documentId")

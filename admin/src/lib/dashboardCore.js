@@ -2,6 +2,8 @@
 
 export const isNum = (v) => typeof v === "number" && Number.isFinite(v);
 
+/** Thousands-separated number; "-" for anything that is not a finite number (never throws). */
+export const fmt = (n) => (isNum(n) ? n.toLocaleString("en-US") : "-");
 export const lastN = (arr, n) => (Array.isArray(arr) && arr.length ? arr.slice(-n) : undefined);
 
 export const sum = (arr) => (Array.isArray(arr) ? arr.reduce((a, b) => a + (isNum(b) ? b : 0), 0) : 0);

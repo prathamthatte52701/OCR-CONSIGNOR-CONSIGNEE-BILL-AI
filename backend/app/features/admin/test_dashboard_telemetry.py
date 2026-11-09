@@ -127,3 +127,34 @@ def test_feed_items_handles_removed_users() -> None:
     ev = {"_id": 1, "userId": None, "action": "signup", "createdAt": datetime.now(UTC)}
     (item,) = feed_items([ev], {})
     assert item["user"] is None and item["count"] == 1
+
+
+# ---------------------------------------------------------------- one-query telemetry
+async def test_ist_day_boundaries_zero_fill_and_trends(db: Any) -> None:
+    from app.features.admin.dashboard import IST, document_telemetry, series_days
+
+    now = datetime(2026, 11, 9, 10, 0, tzinfo=UTC)  # 15:30 IST, 9 Nov
+    days = series_days(now)
+    assert days[-1] == "2026-11-09" and days[0] == "2026-10-27"
+    at = lambda y, m, d, h, mi: datetime(y, m, d, h, mi, tzinfo=IST).astimezone(UTC)  # noqa: E731
+    await db.documents.insert_many(
+        [
+            {"createdAt": at(2026, 11, 8, 23, 59), "uploadStatus": "failed"},  # 8 Nov
+            {"createdAt": at(2026, 11, 9, 0, 1), "uploadStatus": "processed"},  # 9 Nov
+            {"createdAt": at(2026, 10, 27, 0, 1), "uploadStatus": "processed"},  # first day
+            {"createdAt": at(2026, 10, 26, 23, 59), "uploadStatus": "processed"},  # before series
+            {
+                "createdAt": now - timedelta(days=30),
+                "processedAt": now - timedelta(days=2),
+                "uploadStatus": "processed",
+            },  # old doc, processed lately
+        ]
+    )
+    out = await document_telemetry(db, days, now)
+    assert out["uploads"][-1] == 1 and out["uploads"][-2] == 1 and out["uploads"][0] == 1
+    assert out["failures"][-2] == 1 and sum(out["failures"]) == 1
+    assert sum(out["uploads"]) == 3 and out["uploads"][1:-2] == [0] * (SERIES_DAYS - 3)
+    # rolling windows, same as the old count queries: week = now-7d, two_weeks = now-14d
+    assert out["uploads_trend"] == {"current": 2, "previous": 2}
+    assert out["failures_trend"] == {"current": 1, "previous": 0}
+    assert out["processed_trend"] == {"current": 1, "previous": 0}

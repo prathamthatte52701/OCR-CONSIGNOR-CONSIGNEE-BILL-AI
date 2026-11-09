@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   activityCategory,
+  fmt,
   describeActivity,
   lastN,
   relativeTime,
@@ -51,4 +52,10 @@ test("relativeTime", () => {
   assert.equal(relativeTime("2026-01-10T11:59:50Z", now), "just now");
   assert.equal(relativeTime("2026-01-10T10:00:00Z", now), "2 hours ago");
   assert.equal(relativeTime("garbage", now), "");
+});
+
+test("fmt: thousands separator, dash for undefined, null, NaN or non-numbers", () => {
+  assert.equal(fmt(1234567), "1,234,567");
+  assert.equal(fmt(0), "0");
+  for (const bad of [undefined, null, NaN, Infinity, "12", {}]) assert.equal(fmt(bad), "-");
 });

@@ -24,6 +24,7 @@ import { notifyCountsChanged } from "../utils/events";
 import {
   activityCategory,
   describeActivity,
+  fmt,
   lastN,
   relativeTime,
   seriesOk,
@@ -33,7 +34,6 @@ import {
 } from "../lib/dashboardCore";
 
 const NUKE_GLOBAL_PHRASE = "NUKE ALL";
-const fmt = (n) => n.toLocaleString("en-US");
 
 function Card({ title, action, children, className = "" }) {
   return (
@@ -292,6 +292,7 @@ const SERIES_SPARK = 14;
 export default function AdminDashboardPage() {
   const [data, setData] = useState(null);
   const [loadError, setLoadError] = useState("");
+  const [refreshFailed, setRefreshFailed] = useState(false); // a reload failed, old data is shown
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
   const [nukeOpen, setNukeOpen] = useState(false);
@@ -304,8 +305,12 @@ export default function AdminDashboardPage() {
       .then((d) => {
         setData(d);
         setLoadError("");
+        setRefreshFailed(false);
       })
-      .catch((err) => setLoadError(err.userMessage || "Could not load the dashboard."))
+      .catch((err) => {
+        setLoadError(err.userMessage || "Could not load the dashboard.");
+        setRefreshFailed(true); // old numbers stay on screen (if any)
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -325,6 +330,19 @@ export default function AdminDashboardPage() {
     try {
       await adminApi.approveUser(u.id);
       toast.success(`${u.username} approved.`);
+      // Drop the user at once so a failed reload cannot leave a working Approve button.
+      setData((d) =>
+        d && d.pendingUsers
+          ? {
+              ...d,
+              pendingUsers: {
+                ...d.pendingUsers,
+                count: Math.max(0, (d.pendingUsers.count || 0) - 1),
+                oldest: (d.pendingUsers.oldest || []).filter((p) => p.id !== u.id),
+              },
+            }
+          : d,
+      );
     } catch (err) {
       toast.error(err.userMessage || "Could not approve this user.");
     } finally {
@@ -364,6 +382,22 @@ export default function AdminDashboardPage() {
           </button>
         )}
       </div>
+
+      {data && refreshFailed && (
+        <div
+          role="alert"
+          className="mb-4 flex items-center justify-between gap-3 rounded-lg border border-warning bg-warning/10 px-4 py-2 text-sm"
+        >
+          <span>Could not refresh. Showing older numbers.</span>
+          <button
+            type="button"
+            onClick={retry}
+            className="rounded border border-border px-3 py-1 text-xs hover:bg-surface-raised"
+          >
+            Retry
+          </button>
+        </div>
+      )}
 
       {loading && !data ? (
         <LoadingState message="Loading dashboard..." />
