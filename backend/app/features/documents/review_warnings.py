@@ -46,19 +46,32 @@ def _positions(rows: list[int]) -> str:
 
 
 def serial_warning_rows(line_items: list[Any]) -> list[int]:
-    """1-based positions whose serial number is empty/non-numeric, or does not go up."""
+    """1-based positions to check: rows with an empty / non-numeric serial, plus the numeric
+    rows outside the longest strictly increasing run (so one misread number flags itself, not
+    every row after it). On a tie the run that keeps the earlier rows wins."""
     bad: list[int] = []
-    last: int | None = None
+    valid: list[tuple[int, int]] = []  # (position, number)
     for pos, item in enumerate(line_items, 1):
         raw = str(item.get("srNo") if isinstance(item, dict) else "" or "").strip()
-        if not raw.isdecimal():
+        if raw.isdecimal():
+            valid.append((pos, int(raw)))
+        else:
             bad.append(pos)
-            continue
-        number = int(raw)
-        if last is not None and number <= last:
-            bad.append(pos)
-        last = number
-    return bad
+    n = len(valid)
+    longest = [1] * n  # longest increasing run STARTING at i
+    for i in range(n - 1, -1, -1):
+        for j in range(i + 1, n):
+            if valid[j][1] > valid[i][1]:
+                longest[i] = max(longest[i], 1 + longest[j])
+    keep: set[int] = set()
+    need = max(longest, default=0)
+    last = -1
+    for i in range(n):  # earliest rows first: greedy walk down the best run
+        if longest[i] == need and (last < 0 or valid[i][1] > valid[last][1]):
+            keep.add(valid[i][0])
+            last, need = i, need - 1
+    bad.extend(pos for pos, _ in valid if pos not in keep)
+    return sorted(bad)
 
 
 def description_warning_rows(line_items: list[Any]) -> list[int]:

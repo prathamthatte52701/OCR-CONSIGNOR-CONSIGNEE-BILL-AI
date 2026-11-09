@@ -308,3 +308,33 @@ def test_rows_with_empty_or_non_numeric_values_are_skipped() -> None:
 def test_amount_tolerance_edge() -> None:
     assert codes(rows(("1", "10.00", "10.01"))) == []
     assert codes(rows(("1", "10.00", "10.02"))) == ["row_amounts"]
+
+
+# ---------------------------------------------------------------- serial: flag the odd row
+def flagged(*values: Any) -> list[int]:
+    from app.features.documents.review_warnings import serial_warning_rows
+
+    return serial_warning_rows([{"srNo": v} for v in values])
+
+
+def test_one_big_misread_flags_only_itself() -> None:
+    # was rows 4, 5, 6 (everything after the 11); now only the odd row 3
+    assert flagged("2", "3", "11", "4", "5", "6") == [3]
+
+
+def test_one_low_misread_flags_only_itself() -> None:
+    assert flagged("2", "3", "1", "5", "6") == [3]
+
+
+def test_repeat_flags_the_later_row_ties_keep_earlier_rows() -> None:
+    assert flagged("2", "3", "3", "5") == [3]
+    assert flagged("5", "4") == [2]  # tie: the earlier row stays in the run
+
+
+def test_empty_and_non_numeric_are_still_flagged_with_the_odd_row() -> None:
+    # 2,3,30 and 2,3,4 tie on length: the run with the earlier rows (2,3,30) is kept
+    assert flagged("2", "E", "3", "30", "4", "") == [2, 5, 6]
+
+
+def test_clean_lists_flag_nothing() -> None:
+    assert flagged("2", "3", "4") == [] and flagged("1") == [] and flagged() == []
