@@ -18,7 +18,7 @@ def doc(**fields: Any) -> dict[str, Any]:
 
 
 def items(*amounts: Any) -> list[dict[str, Any]]:
-    return [{"amount": a} for a in amounts]
+    return [{"srNo": str(n), "amount": a} for n, a in enumerate(amounts, 1)]
 
 
 def codes(d: dict[str, Any]) -> list[str]:
@@ -163,7 +163,7 @@ async def test_get_has_review_warnings_list_does_not_and_edit_clears_them(
         user["_id"],
         totalBasicAmount="300.00",
         multiPage=True,
-        lineItems=[{"amount": "100.00"}, {"amount": "150.00"}],
+        lineItems=[{"srNo": "1", "amount": "100.00"}, {"srNo": "2", "amount": "150.00"}],
     )
     h = user["headers"]
     got = client.get(f"/api/documents/{d['id']}", headers=h).json()
@@ -228,3 +228,31 @@ def test_plausible_missing_or_unreadable_date_does_not_warn() -> None:
         assert date_warnings(doc(challanDate=value)) == []
     assert date_warnings({"uploadStatus": "failed", "challanDate": "12/07/2031"}) == []
     assert review_warnings({"uploadStatus": "processing", "challanDate": "01/01/2099"}) == []
+
+
+# ---------------------------------------------------------------- serial numbers
+def serials(*values: Any) -> dict[str, Any]:
+    return doc(lineItems=[{"srNo": v, "description": "SECRET TEXT"} for v in values])
+
+
+@pytest.mark.parametrize("bad", ["", None, "E", ".", "-", "1T"])
+def test_empty_or_non_numeric_serial_warns(bad: Any) -> None:
+    (w,) = review_warnings(serials("2", bad, "4"))
+    assert w["code"] == "serial_numbers"
+    assert w["message"].startswith("Line item 2:")
+    assert "SECRET" not in w["message"]
+
+
+def test_repeated_or_decreasing_serial_warns() -> None:
+    assert codes(serials("2", "3", "3")) == ["serial_numbers"]
+    assert codes(serials("2", "5", "4")) == ["serial_numbers"]
+
+
+def test_clean_continuation_list_and_no_items_give_no_serial_warning() -> None:
+    assert codes(serials(*[str(n) for n in range(2, 13)])) == []
+    assert codes(doc()) == []
+
+
+def test_serial_warning_lists_at_most_five_positions() -> None:
+    (w,) = review_warnings(serials(*[""] * 8))
+    assert "1, 2, 3, 4, 5, ..." in w["message"] and "6" not in w["message"]

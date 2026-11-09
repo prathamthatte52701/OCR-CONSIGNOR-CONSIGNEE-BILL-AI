@@ -35,6 +35,30 @@ def _tax_amount(doc: dict[str, Any], amount_key: str, rate_key: str) -> float | 
     return None
 
 
+MAX_POSITIONS = 5
+
+
+def _positions(rows: list[int]) -> str:
+    shown = ", ".join(str(n) for n in rows[:MAX_POSITIONS])
+    return shown + (", ..." if len(rows) > MAX_POSITIONS else "")
+
+
+def serial_warning_rows(line_items: list[Any]) -> list[int]:
+    """1-based positions whose serial number is empty/non-numeric, or does not go up."""
+    bad: list[int] = []
+    last: int | None = None
+    for pos, item in enumerate(line_items, 1):
+        raw = str(item.get("srNo") if isinstance(item, dict) else "" or "").strip()
+        if not raw.isdecimal():
+            bad.append(pos)
+            continue
+        number = int(raw)
+        if last is not None and number <= last:
+            bad.append(pos)
+        last = number
+    return bad
+
+
 def review_warnings(doc: dict[str, Any], today: date | None = None) -> list[dict[str, str]]:
     if doc.get("uploadStatus") != "processed":
         return []
@@ -71,6 +95,18 @@ def review_warnings(doc: dict[str, Any], today: date | None = None) -> list[dict
                         ),
                     }
                 )
+
+    bad_serials = serial_warning_rows(line_items)
+    if bad_serials:
+        warnings.append(
+            {
+                "code": "serial_numbers",
+                "message": (
+                    f"Line item {_positions(bad_serials)}: serial number looks wrong or "
+                    "missing - please check it against the original."
+                ),
+            }
+        )
 
     if doc.get("totalBasicAmountAutoCorrected") is True:
         warnings.append(
