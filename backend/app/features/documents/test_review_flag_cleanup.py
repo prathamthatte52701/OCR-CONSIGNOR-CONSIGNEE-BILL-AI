@@ -16,7 +16,7 @@ _REAL_JOB = r_mod._run_pipeline_and_update  # before any test stubs it
 CLEAN: dict[str, Any] = {
     "totalBasicAmount": "100.00",
     "totalAmount": "100.00",
-    "lineItems": [{"amount": "100.00"}],
+    "lineItems": [{"srNo": "1", "description": "Item", "amount": "100.00"}],
     "multiPage": False,
 }
 

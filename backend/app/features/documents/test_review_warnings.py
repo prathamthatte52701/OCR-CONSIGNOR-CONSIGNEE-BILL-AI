@@ -18,7 +18,7 @@ def doc(**fields: Any) -> dict[str, Any]:
 
 
 def items(*amounts: Any) -> list[dict[str, Any]]:
-    return [{"srNo": str(n), "amount": a} for n, a in enumerate(amounts, 1)]
+    return [{"srNo": str(n), "description": "Item", "amount": a} for n, a in enumerate(amounts, 1)]
 
 
 def codes(d: dict[str, Any]) -> list[str]:
@@ -163,7 +163,10 @@ async def test_get_has_review_warnings_list_does_not_and_edit_clears_them(
         user["_id"],
         totalBasicAmount="300.00",
         multiPage=True,
-        lineItems=[{"srNo": "1", "amount": "100.00"}, {"srNo": "2", "amount": "150.00"}],
+        lineItems=[
+            {"srNo": "1", "description": "Item", "amount": "100.00"},
+            {"srNo": "2", "description": "Item", "amount": "150.00"},
+        ],
     )
     h = user["headers"]
     got = client.get(f"/api/documents/{d['id']}", headers=h).json()
@@ -256,3 +259,23 @@ def test_clean_continuation_list_and_no_items_give_no_serial_warning() -> None:
 def test_serial_warning_lists_at_most_five_positions() -> None:
     (w,) = review_warnings(serials(*[""] * 8))
     assert "1, 2, 3, 4, 5, ..." in w["message"] and "6" not in w["message"]
+
+
+# ---------------------------------------------------------------- junk descriptions
+def descs(*values: Any) -> dict[str, Any]:
+    return doc(lineItems=[{"srNo": str(n), "description": v} for n, v in enumerate(values, 1)])
+
+
+@pytest.mark.parametrize("bad", ["", None, "  ", "EN", "-.", "|||)(", "a)(|/"])
+def test_empty_short_or_symbol_description_warns(bad: Any) -> None:
+    (w,) = review_warnings(descs("HOB ED23167", bad))
+    assert w["code"] == "descriptions"
+    assert w["message"].startswith("Line item 2:")
+    assert "HOB" not in w["message"]
+
+
+@pytest.mark.parametrize(
+    "ok", ["END", "HOEED2316743875)90x140-A", "HOB ED23167 Ø90x140-A", "SANDVK"]
+)
+def test_normal_noisy_description_does_not_warn(ok: str) -> None:
+    assert codes(descs(ok)) == []

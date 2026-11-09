@@ -36,6 +36,8 @@ def _tax_amount(doc: dict[str, Any], amount_key: str, rate_key: str) -> float | 
 
 
 MAX_POSITIONS = 5
+MIN_DESCRIPTION_CHARS = 3
+MAX_SYMBOL_SHARE = 0.4  # symbols/broken characters over this share of the text = junk
 
 
 def _positions(rows: list[int]) -> str:
@@ -56,6 +58,17 @@ def serial_warning_rows(line_items: list[Any]) -> list[int]:
         if last is not None and number <= last:
             bad.append(pos)
         last = number
+    return bad
+
+
+def description_warning_rows(line_items: list[Any]) -> list[int]:
+    """1-based positions whose description is empty, tiny or mostly symbols."""
+    bad: list[int] = []
+    for pos, item in enumerate(line_items, 1):
+        text = "".join(str(item.get("description") or "").split()) if isinstance(item, dict) else ""
+        symbols = sum(not ch.isalnum() for ch in text)
+        if len(text) < MIN_DESCRIPTION_CHARS or symbols / len(text) > MAX_SYMBOL_SHARE:
+            bad.append(pos)
     return bad
 
 
@@ -104,6 +117,18 @@ def review_warnings(doc: dict[str, Any], today: date | None = None) -> list[dict
                 "message": (
                     f"Line item {_positions(bad_serials)}: serial number looks wrong or "
                     "missing - please check it against the original."
+                ),
+            }
+        )
+
+    bad_descriptions = description_warning_rows(line_items)
+    if bad_descriptions:
+        warnings.append(
+            {
+                "code": "descriptions",
+                "message": (
+                    f"Line item {_positions(bad_descriptions)}: description is empty or "
+                    "unreadable - please check it against the original."
                 ),
             }
         )
