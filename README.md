@@ -65,6 +65,20 @@ cd frontend && npm install && npm run dev
 cd admin && npm install && npm run dev
 ```
 
+### Running behind a proxy
+
+Rate limits are keyed on the connecting IP. Behind a reverse proxy every user would look like the
+proxy's address, so let uvicorn rewrite the client address itself, for the trusted proxy only:
+
+```bash
+uvicorn app.main:app --host 127.0.0.1 --port 9000 --proxy-headers --forwarded-allow-ips="10.0.0.5"
+```
+
+Set `--forwarded-allow-ips` to the proxy's address (comma separated for several), **never `*`**:
+with `*` anyone can send a forged `X-Forwarded-For` header and pick their own rate-limit key.
+The app never reads `X-Forwarded-For` on its own; a header that no trusted proxy rewrote is
+ignored (covered by `app/core/test_rate_limit_key.py`).
+
 ### Environment variables (`backend/.env`)
 
 | Variable | Purpose |
