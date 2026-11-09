@@ -214,3 +214,56 @@ async def test_clear_all_writes_audit_counts_only(client: Any, make_user: Any, d
     assert ctx["deleted"] == 2 and {"scope", "range"} <= set(ctx)
     dumped = json.dumps(entries[0], default=str)
     assert SECRET not in dumped and adm.password not in dumped
+
+
+@pytest.mark.usefixtures("limiter_on")
+async def test_clear_all_right_password_uses_no_attempts(
+    client: Any, make_user: Any, db: Any
+) -> None:
+    adm, u = await make_user(role="admin"), await make_user()
+    await seed(db, u, "a", to_admin=adm)
+    for _ in range(8):  # more than the 5-per-hour budget, all with the right password
+        assert (await _clear_all(client, adm, dryRun=True)).status_code == 200
+    assert (await _clear_all(client, adm)).status_code == 200  # the real delete still works
+    # the full budget of wrong guesses is still there afterwards
+    for _ in range(5):
+        assert (await _clear_all(client, adm, password="Wr0ng!pass9")).status_code == 400
+    assert (await _clear_all(client, adm, password="Wr0ng!pass9")).status_code == 429
+
+
+@pytest.mark.usefixtures("limiter_on")
+async def test_clear_all_wrong_then_right_still_works_under_the_limit(
+    client: Any, make_user: Any
+) -> None:
+    adm = await make_user(role="admin")
+    for _ in range(4):
+        assert (
+            await _clear_all(client, adm, password="Wr0ng!pass9", dryRun=True)
+        ).status_code == 400
+    assert (await _clear_all(client, adm, dryRun=True)).status_code == 200
+    assert (await _clear_all(client, adm, password="Wr0ng!pass9", dryRun=True)).status_code == 400
+    assert (await _clear_all(client, adm, dryRun=True)).status_code == 429  # 5 wrong used
+
+
+@pytest.mark.usefixtures("limiter_on")
+async def test_clear_all_parallel_wrong_guesses_cannot_slip_past_the_limit(
+    client: Any, make_user: Any
+) -> None:
+    import asyncio
+
+    adm = await make_user(role="admin")
+    results = await asyncio.gather(
+        *(_clear_all(client, adm, password="Wr0ng!pass9", dryRun=True) for _ in range(12))
+    )
+    codes = sorted(r.status_code for r in results)
+    assert codes.count(400) == 5 and codes.count(429) == 7
+
+
+async def test_clear_all_account_without_a_password_gets_a_plain_message(
+    client: Any, make_user: Any, db: Any
+) -> None:
+    adm = await make_user(role="admin")
+    await db.users.update_one({"_id": adm.id}, {"$unset": {"passwordHash": ""}})
+    r = await _clear_all(client, adm, dryRun=True)
+    assert r.status_code == 400
+    assert r.json()["detail"] == "This account has no password set."
