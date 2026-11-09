@@ -122,7 +122,7 @@ export default function AdminLayout() {
         <div className="mx-auto flex h-full max-w-6xl items-center justify-between px-4">
           <div className="flex min-w-0 items-center gap-2">
             <ShieldAlert size={18} className="shrink-0 text-accent" />
-            <span className="truncate font-semibold tracking-tight">THE MAIN OCR &middot; Admin</span>
+            <span className="hidden truncate font-semibold tracking-tight xl:inline">THE MAIN OCR &middot; Admin</span>
           </div>
 
           <nav className="flex min-w-0 items-center gap-1 overflow-x-auto">
@@ -132,7 +132,7 @@ export default function AdminLayout() {
                 to={to}
                 className={({ isActive }) =>
                   cn(
-                    "flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded text-sm",
+                    "flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded text-sm lg:px-2",
                     isActive ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-raised"
                   )
                 }
