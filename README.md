@@ -340,14 +340,24 @@ come from one run of that set and are not a promise for other documents.
 
 | Measure | Result |
 |---|---|
-| All cells | 91.06% (92.46% when only cells with certain reference values are counted) |
+| All cells (lenient description) | 91.06% (92.46% when only cells with certain reference values are counted) |
+| All cells (strict description) | 86.28% |
 | Part 1 header fields | 97.96% |
 | Part 2 totals and tax | 99.15% |
-| Part 2 line-item cells | 83.27% |
+| Part 2 line-item cells (lenient description) | 83.27% |
+| Part 2 line-item cells (strict description) | 73.33% |
+| Description (lenient: spaces, case, punctuation and a dropped diameter sign are forgiven) | 61.48% |
+| Description (strict: exactly the same text) | 1.85% (5 of 270) |
 | Failed uploads, OCR errors, timeouts | 0 in 79 runs (59 single + 20 bulk) |
 | Time per document | 101.5 s on average (one pair at a time, CPU) |
 
-Weakest fields: description 61.48%, serial number (`srNo`) 68.89%, reason 75.86%, HSN/SAC
+The overall 91.06% and the line-item 83.27% use the lenient description score. With the strict
+description score they are 86.28% and 73.33%. The strict numbers change only the description
+cells; every other field is scored the same way in both. Descriptions are very rarely copied
+exactly: OCR usually drops spaces or the diameter sign, so read the lenient 61.48% as "close to
+the printed text", not as "correct".
+
+Weakest fields (lenient): description 61.48%, serial number (`srNo`) 68.89%, reason 75.86%, HSN/SAC
 88.52%, amount 92.59%, quantity 92.96%. Twenty fields were read correctly in every document
 (for example consignee code, GSTIN, PAN, state, pincode, challan date, total amount).
 
