@@ -120,19 +120,19 @@ export default function AdminLayout() {
     <div className="min-h-screen bg-bg text-text">
       <header className="sticky top-0 z-30 h-14 border-b border-border bg-surface">
         <div className="mx-auto flex h-full max-w-6xl items-center justify-between px-4">
-          <div className="flex items-center gap-2">
-            <ShieldAlert size={18} className="text-accent" />
-            <span className="font-semibold tracking-tight">THE MAIN OCR &middot; Admin</span>
+          <div className="flex min-w-0 items-center gap-2">
+            <ShieldAlert size={18} className="shrink-0 text-accent" />
+            <span className="truncate font-semibold tracking-tight">THE MAIN OCR &middot; Admin</span>
           </div>
 
-          <nav className="flex items-center gap-1">
+          <nav className="flex min-w-0 items-center gap-1 overflow-x-auto">
             {NAV_ITEMS.map(({ to, label, icon: Icon, badge }) => (
               <NavLink
                 key={to}
                 to={to}
                 className={({ isActive }) =>
                   cn(
-                    "flex items-center gap-1.5 px-3 py-1.5 rounded text-sm",
+                    "flex shrink-0 items-center gap-1.5 px-3 py-1.5 rounded text-sm",
                     isActive ? "bg-accent/15 text-accent" : "text-text-muted hover:text-text hover:bg-surface-raised"
                   )
                 }
@@ -148,7 +148,7 @@ export default function AdminLayout() {
             ))}
           </nav>
 
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-3">
             {adminId && (
               <ChatButton
                 buttonRef={chatButton}

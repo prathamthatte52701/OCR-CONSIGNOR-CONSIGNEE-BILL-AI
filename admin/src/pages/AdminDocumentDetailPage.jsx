@@ -6,6 +6,7 @@ import { adminApi } from "../api/admin";
 import { readErrorMessage } from "../api/client";
 import LoadingState from "../components/LoadingState";
 import ConfirmModal from "../components/ConfirmModal";
+import BackButton from "../components/BackButton";
 import { formatIST } from "../lib/formatDate";
 
 const DISPLAY_FIELDS = [
@@ -89,9 +90,7 @@ export default function AdminDocumentDetailPage() {
 
   return (
     <div className="max-w-3xl">
-      <button onClick={() => navigate(-1)} className="text-xs text-text-muted hover:text-accent mb-3">
-        &larr; Back
-      </button>
+      <BackButton fallback="/documents" className="mb-3" />
 
       <div className="flex items-start justify-between mb-6">
         <div>

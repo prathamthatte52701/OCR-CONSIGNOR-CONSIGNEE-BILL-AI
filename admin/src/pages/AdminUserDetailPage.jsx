@@ -7,6 +7,7 @@ import LoadingState from "../components/LoadingState";
 import ConfirmModal from "../components/ConfirmModal";
 import NukeDialog from "../components/NukeDialog";
 import PurgeMonthsDialog from "../components/PurgeMonthsDialog";
+import BackButton from "../components/BackButton";
 import { formatIST } from "../lib/formatDate";
 
 const NUKE_USER_PHRASE = "NUKE USER";
@@ -102,9 +103,7 @@ export default function AdminUserDetailPage() {
 
   return (
     <div className="max-w-2xl">
-      <button onClick={() => navigate(-1)} className="text-xs text-text-muted hover:text-accent mb-3">
-        &larr; Back
-      </button>
+      <BackButton fallback="/users" className="mb-3" />
 
       <div className="bg-surface border border-border rounded-lg p-5 mb-6">
         <div className="flex items-start justify-between">
